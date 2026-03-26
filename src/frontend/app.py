@@ -137,6 +137,20 @@ p, li, .stMarkdown { color: #D0DBF0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Live gem loader ──────────────────────────────────────────────────
+def load_live_gem() -> dict | None:
+    """Charge le top Hidden Gem depuis live_listings_scored.json. Fallback sur APT si absent."""
+    p = ROOT / "src" / "frontend" / "live_listings_scored.json"
+    if p.exists():
+        data = json.loads(p.read_text(encoding="utf-8"))
+        # Supporte format liste plate ou {"gems": [...]}
+        listings = data["gems"] if isinstance(data, dict) else data
+        gems = [l for l in listings if l.get("gem_score", 0) > 0]
+        if gems:
+            return max(gems, key=lambda x: x["gem_score"])
+    return None
+
+
 # ── Hardcoded demo apartment ─────────────────────────────────────────
 APT = {
     "titre":               "Appartement 3 pièces — Bastille / République",
@@ -195,6 +209,25 @@ APT = {
         "Proche République et Bastille. DPE : C."
     ),
 }
+
+# ── Override APT avec données live (best-effort) ─────────────────────
+_live = load_live_gem()
+if _live:
+    APT.update({
+        "titre":           _live.get("titre",          APT["titre"]),
+        "arrondissement":  _live.get("arrondissement", APT["arrondissement"]),
+        "surface":         _live.get("surface",        APT["surface"]),
+        "pieces":          _live.get("pieces",         APT["pieces"]),
+        "lat":             _live.get("latitude",       APT["lat"]),
+        "lon":             _live.get("longitude",      APT["lon"]),
+        "prix_affiche":    _live.get("prix_annonce",   APT["prix_affiche"]),
+        "prix_m2_affiche": int(_live.get("prix_annonce", 0) / max(_live.get("surface", 1), 1)),
+        "prix_predit_m2":  int(_live.get("prix_predit_m2", APT["prix_predit_m2"])),
+        "prix_predit":     int(_live.get("prix_predit_m2", APT["prix_predit_m2"]) * _live.get("surface", APT["surface"])),
+        "delta_pct":       round(_live.get("gem_score", 0) * 100, 1),
+        "delta_eur":       int(_live.get("gain_potentiel", APT["delta_eur"])),
+        "description":     _live.get("description",   APT["description"]),
+    })
 
 SHAP_TEXT = (
     "Cet appartement est estimé **{delta:+,.0f}€ au-dessus du marché** car il bénéficie "
@@ -422,6 +455,45 @@ if page == "🔍 Analyse d'annonce":
             f'</div>',
             unsafe_allow_html=True,
         )
+
+        # Section Vision IA
+        with st.expander("🔍 Analyse Visuelle IA — Score rénovation live", expanded=False):
+            try:
+                import os
+                api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+                if api_key:
+                    img_url = (_live.get("image_url", "") if _live else "") or ""
+                    if not img_url:
+                        img_url = "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=400"
+
+                    from src.vision.renovation_scorer import RenovationScorer
+                    scorer = RenovationScorer()
+                    vision_result = scorer.score_from_url(img_url)
+                    score = vision_result.renovation_score
+                    reasoning = vision_result.reasoning
+                    price_impact = (score - 3) * -50  # score 1=+100€/m², 5=-100€/m²
+
+                    col_v1, col_v2 = st.columns([1, 2])
+                    with col_v1:
+                        st.markdown(reno_html(score), unsafe_allow_html=True)
+                        impact_color = "#00D4AA" if price_impact >= 0 else "#ef4444"
+                        st.markdown(
+                            f'<div style="color:{impact_color};font-weight:700">'
+                            f'Impact prix: {price_impact:+d}€/m²</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with col_v2:
+                        st.markdown(
+                            f'<div style="color:#94a3b8;font-size:0.88em">{reasoning}</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.info("🔑 GOOGLE_API_KEY non configurée — score rénovation estimé manuellement")
+                    st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
+                    st.caption(APT["renovation_reasoning"])
+            except Exception:
+                st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
+                st.caption(APT["renovation_reasoning"])
 
         st.markdown("#### 📋 Caractéristiques")
         m1, m2, m3 = st.columns(3)
