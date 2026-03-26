@@ -206,7 +206,7 @@ with st.sidebar:
     st.markdown("**Stack technique**")
     st.caption("LightGBM · SHAP · Gemini Vision · OSM")
     st.markdown("**Données**")
-    st.caption("DVF 2023 · 29 412 transactions Paris")
+    st.caption("DVF 2023–2025 · 67 292 transactions Paris")
     st.divider()
     st.caption("Capstone IA — 2024/2025")
 
@@ -455,7 +455,7 @@ elif page == "💎 Recommandeur Hidden Gems":
                             f'<br><span style="color:#6b7280;font-size:0.85em">'
                             f'{gem.surface} m² · {gem.pieces} pièces · '
                             f'Paris {gem.arrondissement}{"er" if gem.arrondissement == 1 else "e"}'
-                            f' · Transaction mois {gem.mois_transaction}/2023</span>'
+                            f' · Transaction mois {gem.mois_transaction}</span>'
                             f'</div>'
                             f'<div style="text-align:right">'
                             f'<div style="background:{decote_color};color:white;padding:8px 16px;'
