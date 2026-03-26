@@ -1,8 +1,10 @@
+# DISABLED — Railway is deployed via GitHub App integration (auto-deploy on push to main)
+# To re-enable CLI-based deploy, restore the 'on:' trigger and set RAILWAY_TOKEN secret.
+
 name: Deploy to Railway
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:  # manual only — auto-deploy handled by Railway GitHub App
 
 jobs:
   deploy:
