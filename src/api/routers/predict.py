@@ -45,7 +45,7 @@ def _build_input_df(req: PredictionRequest) -> pd.DataFrame:
     """Convert a PredictionRequest into a single-row DataFrame."""
     import datetime
     annee = req.annee if req.annee is not None else datetime.datetime.now().year
-    return pd.DataFrame([{
+    df = pd.DataFrame([{
         "code_postal":               75000 + req.arrondissement,
         "surface_reelle_bati":       req.surface,
         "nombre_pieces_principales": req.pieces,
@@ -62,6 +62,30 @@ def _build_input_df(req: PredictionRequest) -> pd.DataFrame:
         "lot4_surface_carrez":       np.nan,
         "lot5_surface_carrez":       np.nan,
     }])
+
+    # OSM enrichment (best-effort, fallback à zéro si indisponible)
+    _OSM_COLS = ["nb_restaurants", "nb_transport", "nb_parks", "walkability_score", "dist_metro_m"]
+    try:
+        osm_path = ROOT / "data" / "outputs" / "dvf_paris_osm_enriched.parquet"
+        if osm_path.exists():
+            osm_df = pd.read_parquet(osm_path, columns=["grid_lat", "grid_lon"] + _OSM_COLS)
+            grid_lat = round(req.latitude / 0.005) * 0.005
+            grid_lon = round(req.longitude / 0.005) * 0.005
+            osm_row = osm_df[(osm_df.grid_lat == grid_lat) & (osm_df.grid_lon == grid_lon)]
+            if not osm_row.empty:
+                for col in _OSM_COLS:
+                    df[col] = osm_row[col].values[0]
+            else:
+                for col in _OSM_COLS:
+                    df[col] = 0
+        else:
+            for col in _OSM_COLS:
+                df[col] = 0
+    except Exception:
+        for col in _OSM_COLS:
+            df[col] = 0
+
+    return df
 
 
 def _shap_contributions(model: Any, X: pd.DataFrame) -> list[ShapContribution]:
