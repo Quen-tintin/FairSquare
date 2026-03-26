@@ -1,0 +1,42 @@
+# Env & secrets
+.env
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Data (large files — keep outputs/ and processed preview CSVs)
+data/raw/
+data/features/
+data/processed/*.parquet
+
+# Models binaries (keep registry/)
+models/artifacts/
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Claude
+.claude/
+
+# Node
+node_modules/
