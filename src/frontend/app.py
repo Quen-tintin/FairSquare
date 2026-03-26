@@ -24,6 +24,7 @@ PROCESSED    = DATA_DIR / "processed" / "dvf_paris_2023_2025_clean.parquet"
 FIGURES_DIR  = DATA_DIR / "outputs" / "ml" / "figures"
 METRICS_PATH = DATA_DIR / "outputs" / "ml" / "metrics.json"
 TEST_IMG     = DATA_DIR / "raw" / "test_apartment.jpg"
+LIVE_SCORED  = Path(__file__).parent / "live_listings_scored.json"
 
 # ── Page config ──────────────────────────────────────────────────────
 st.set_page_config(
@@ -120,6 +121,14 @@ def load_dvf() -> pd.DataFrame | None:
     return None
 
 
+@st.cache_data(show_spinner=False)
+def load_live_scored() -> dict | None:
+    """Load pre-scored live listings from JSON."""
+    if LIVE_SCORED.exists():
+        return json.loads(LIVE_SCORED.read_text(encoding="utf-8"))
+    return None
+
+
 @st.cache_data(show_spinner="Entraînement modèle pour analyse…")
 def fit_error_model() -> pd.DataFrame | None:
     """Quick LightGBM fit → returns test-set residuals for error analysis."""
@@ -194,6 +203,7 @@ with st.sidebar:
         "Navigation",
         options=[
             "🔍 Analyse d'annonce",
+            "🏪 Hidden Gems du marché",
             "💎 Recommandeur Hidden Gems",
             "📊 Performance modèle",
             "📈 Analyse des erreurs",
@@ -203,6 +213,26 @@ with st.sidebar:
     )
 
     st.divider()
+
+    # ── Live listings counter ────────────────────────────────────────
+    _live = load_live_scored()
+    if _live:
+        _meta = _live.get("metadata", {})
+        _nb_analyse = _meta.get("nb_annonces_analysees", 0)
+        _nb_gems    = _meta.get("nb_pepites", 0)
+        _date_maj   = _meta.get("date_mise_a_jour", "aujourd'hui")
+        st.markdown(
+            f'<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;'
+            f'padding:10px 12px;margin-bottom:8px">'
+            f'<div style="font-size:0.8em;color:#15803d;font-weight:600">📡 Marché live</div>'
+            f'<div style="font-size:1.1em;font-weight:700;color:#166534">'
+            f'{_nb_analyse} annonces · {_nb_gems} pépites</div>'
+            f'<div style="font-size:0.72em;color:#6b7280;margin-top:2px">'
+            f'Mis à jour : {_date_maj}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown("**Stack technique**")
     st.caption("LightGBM · SHAP · Gemini Vision · OSM")
     st.markdown("**Données**")
@@ -216,11 +246,41 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════════════
 if page == "🔍 Analyse d'annonce":
 
+    # ── Load top live gem if available ────────────────────────────────
+    _live_data = load_live_scored()
+    _top_gem   = (_live_data or {}).get("gems", [None])[0] if _live_data else None
+
+    if _top_gem:
+        arr_label = f"{_top_gem['arrondissement']}{'er' if _top_gem['arrondissement'] == 1 else 'e'}"
+        _apt = {
+            **APT,
+            "titre":           _top_gem["titre"],
+            "adresse":         f"Paris {arr_label} — {_top_gem.get('source', 'Annonce')}",
+            "surface":         _top_gem["surface"],
+            "pieces":          _top_gem["pieces"],
+            "arrondissement":  _top_gem["arrondissement"],
+            "lat":             _top_gem.get("latitude", APT["lat"]),
+            "lon":             _top_gem.get("longitude", APT["lon"]),
+            "prix_affiche":    _top_gem["prix_annonce"],
+            "prix_m2_affiche": _top_gem["prix_affiche_m2"],
+            "prix_predit":     _top_gem["prix_predit"],
+            "prix_predit_m2":  _top_gem["prix_predit_m2"],
+            "delta_eur":       _top_gem["gain_potentiel"],
+            "delta_pct":       _top_gem["sous_evaluation_pct"],
+            "url_annonce":     _top_gem.get("url", ""),
+        }
+        _date_live = (_live_data or {}).get("metadata", {}).get("date_mise_a_jour", "aujourd'hui")
+        _live_label = f"Annonce live — mis à jour le {_date_live}"
+    else:
+        _apt = APT
+        _live_label = "📌 Bien de démonstration"
+
     # ── Header ───────────────────────────────────────────────────────
     col_title, col_badge = st.columns([3, 1])
     with col_title:
-        st.markdown(f"## {APT['titre']}")
-        st.markdown(f"📍 `{APT['adresse']}`   ·   {APT['surface']} m²   ·   {APT['pieces']} pièces   ·   {APT['etage']}e étage")
+        st.markdown(f"## {_apt['titre']}")
+        st.caption(_live_label)
+        st.markdown(f"📍 `{_apt['adresse']}`   ·   {_apt['surface']} m²   ·   {_apt['pieces']} pièces")
     with col_badge:
         st.markdown(
             f'<div style="background:linear-gradient(135deg,#16a34a,#22c55e);'
@@ -228,7 +288,7 @@ if page == "🔍 Analyse d'annonce":
             f'box-shadow:0 4px 12px rgba(34,197,94,0.3)">'
             f'<div style="font-size:1.4em">💎</div>'
             f'<div style="font-weight:700;font-size:1.05em">HIDDEN GEM</div>'
-            f'<div style="font-size:0.8em;opacity:0.9">Sous-évalué de {APT["delta_pct"]:.1f}%</div>'
+            f'<div style="font-size:0.8em;opacity:0.9">Sous-évalué de {_apt["delta_pct"]:.1f}%</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -251,30 +311,30 @@ if page == "🔍 Analyse d'annonce":
 
         # Score rénovation
         st.markdown("#### 🔨 Score de rénovation — Vision IA (Gemini)")
-        st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
+        st.markdown(reno_html(_apt["renovation_score"]), unsafe_allow_html=True)
         st.markdown(
             f'<div style="background:#f9fafb;border-left:3px solid #84cc16;'
             f'padding:10px 14px;border-radius:0 6px 6px 0;margin-top:6px;'
             f'color:#374151;font-size:0.88em">'
-            f'{APT["renovation_reasoning"]}'
+            f'{_apt["renovation_reasoning"]}'
             f'</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown("#### 📋 Caractéristiques")
         m1, m2, m3 = st.columns(3)
-        m1.metric("Surface", f"{APT['surface']} m²")
-        m2.metric("Pièces",  str(APT["pieces"]))
-        m3.metric("Étage",   f"{APT['etage']}e")
+        m1.metric("Surface", f"{_apt['surface']} m²")
+        m2.metric("Pièces",  str(_apt["pieces"]))
+        m3.metric("Étage",   f"{_apt.get('etage', '?')}e" if _apt.get('etage') else "—")
 
         m4, m5, m6 = st.columns(3)
-        m4.metric("Arrondissement",   f"{APT['arrondissement']}e")
-        m5.metric("Walkabilité",      f"{APT['walkability_score']}/100")
-        m6.metric("Transports 500m",  str(APT["transit_count_500m"]))
+        m4.metric("Arrondissement",   f"{_apt['arrondissement']}e")
+        m5.metric("Walkabilité",      f"{_apt['walkability_score']}/100")
+        m6.metric("Transports 500m",  str(_apt["transit_count_500m"]))
 
         st.markdown(
             f'<div style="color:#6b7280;font-size:0.83em;margin-top:8px">'
-            f'<em>{APT["description"]}</em></div>',
+            f'<em>{_apt.get("description", APT["description"])}</em></div>',
             unsafe_allow_html=True,
         )
 
@@ -286,33 +346,34 @@ if page == "🔍 Analyse d'annonce":
         pc1, pc2 = st.columns(2)
         with pc1:
             st.markdown(
-                price_card("Prix affiché", APT["prix_affiche"], APT["prix_m2_affiche"]),
+                price_card("Prix affiché", int(_apt["prix_affiche"]), int(_apt["prix_m2_affiche"])),
                 unsafe_allow_html=True,
             )
         with pc2:
             st.markdown(
                 price_card(
                     "Prix prédit · LightGBM",
-                    APT["prix_predit"], APT["prix_predit_m2"],
+                    int(_apt["prix_predit"]), int(_apt["prix_predit_m2"]),
                     border_color="#22c55e", bg="#f0fdf4", text_color="#166534",
                 ),
                 unsafe_allow_html=True,
             )
 
         st.success(
-            f"**Opportunité : +{APT['delta_eur']:,} €** sous la valeur estimée "
-            f"({APT['delta_pct']:.1f}% de décote)"
+            f"**Opportunité : +{int(_apt['delta_eur']):,} €** sous la valeur estimée "
+            f"({_apt['delta_pct']:.1f}% de décote)"
         )
 
         # XAI block
         st.markdown("#### 🧠 Explication IA — SHAP")
-        st.info(SHAP_TEXT.format(delta=APT["delta_eur"]))
+        st.info(SHAP_TEXT.format(delta=int(_apt["delta_eur"])))
 
-        # Waterfall SHAP chart
-        base = APT["prix_predit_m2"] - sum(APT["shap"].values())
-        labels = ["Base marché Paris"] + list(APT["shap"].keys())
-        values = [base] + list(APT["shap"].values())
-        measures = ["absolute"] + ["relative"] * len(APT["shap"])
+        # Waterfall SHAP chart — use stored SHAP or approximate for live gem
+        _shap = _apt.get("shap", APT["shap"])
+        base = int(_apt["prix_predit_m2"]) - sum(_shap.values())
+        labels = ["Base marché Paris"] + list(_shap.keys())
+        values = [base] + list(_shap.values())
+        measures = ["absolute"] + ["relative"] * len(_shap)
 
         fig_shap = go.Figure(go.Waterfall(
             orientation="h",
@@ -337,6 +398,55 @@ if page == "🔍 Analyse d'annonce":
         )
         st.plotly_chart(fig_shap, use_container_width=True)
 
+        # Scatter: bien vs arrondissement market
+        _dvf = load_dvf()
+        if _dvf is not None:
+            try:
+                _arr_filter = _apt["arrondissement"]
+                _dvf_arr = _dvf.copy()
+                _dvf_arr["arr"] = (_dvf_arr["code_postal"].fillna(75001) % 100).astype(int)
+                _dvf_arr = _dvf_arr[
+                    (_dvf_arr["arr"] == _arr_filter) &
+                    _dvf_arr["prix_m2"].between(2000, 25000)
+                ]
+                if len(_dvf_arr) > 0:
+                    fig_scatter = go.Figure()
+                    fig_scatter.add_trace(go.Scatter(
+                        x=_dvf_arr["surface_reelle_bati"],
+                        y=_dvf_arr["prix_m2"],
+                        mode="markers",
+                        marker=dict(color="#94a3b8", size=5, opacity=0.4),
+                        name=f"Marché {_arr_filter}e arr.",
+                    ))
+                    fig_scatter.add_trace(go.Scatter(
+                        x=[_apt["surface"]],
+                        y=[_apt["prix_m2_affiche"]],
+                        mode="markers",
+                        marker=dict(color="#f59e0b", size=16, symbol="star"),
+                        name="Ce bien (prix affiché)",
+                    ))
+                    fig_scatter.add_trace(go.Scatter(
+                        x=[_apt["surface"]],
+                        y=[_apt["prix_predit_m2"]],
+                        mode="markers",
+                        marker=dict(color="#22c55e", size=16, symbol="star"),
+                        name="Prix FairSquare",
+                    ))
+                    fig_scatter.update_layout(
+                        title=f"Ce bien vs marché du {_arr_filter}e arrondissement",
+                        xaxis_title="Surface (m²)",
+                        yaxis_title="Prix/m² (€)",
+                        height=300,
+                        plot_bgcolor="white",
+                        xaxis=dict(gridcolor="#f3f4f6"),
+                        yaxis=dict(gridcolor="#f3f4f6"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        margin=dict(l=10, r=10, t=50, b=10),
+                    )
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+            except Exception:
+                pass
+
         # Neighbourhood vibe
         st.markdown("#### 🌆 Vibe du quartier (OSM + LLM)")
         st.markdown(
@@ -345,9 +455,9 @@ if page == "🔍 Analyse d'annonce":
             f'<span style="font-size:2.2em;line-height:1">⚡</span>'
             f'<div>'
             f'<div style="font-weight:700;font-size:1.1em;color:#713f12">'
-            f'Vibe du quartier : <em>{APT["neighborhood_vibe"]}</em></div>'
+            f'Vibe du quartier : <em>{_apt["neighborhood_vibe"]}</em></div>'
             f'<div style="color:#92400e;font-size:0.85em;margin-top:4px">'
-            f'{APT["neighborhood_summary"]}</div>'
+            f'{_apt["neighborhood_summary"]}</div>'
             f'</div></div>',
             unsafe_allow_html=True,
         )
@@ -355,7 +465,7 @@ if page == "🔍 Analyse d'annonce":
         # POI table
         st.markdown("**Points d'intérêt à proximité :**")
         poi_cols = st.columns(2)
-        for i, poi in enumerate(APT["nearby_pois"]):
+        for i, poi in enumerate(_apt["nearby_pois"]):
             with poi_cols[i % 2]:
                 note = f" · *{poi['note']}*" if poi.get("note") else ""
                 st.markdown(f"{poi['icon']} **{poi['name']}** — {poi['dist']}{note}")
@@ -364,10 +474,146 @@ if page == "🔍 Analyse d'annonce":
     st.divider()
     st.markdown("#### 🗺️ Localisation")
     map_df = pd.DataFrame([{
-        "lat": APT["lat"], "lon": APT["lon"],
-        "label": APT["titre"], "prix": APT["prix_affiche"],
+        "lat": _apt["lat"], "lon": _apt["lon"],
+        "label": _apt["titre"], "prix": _apt["prix_affiche"],
     }])
     st.map(map_df, latitude="lat", longitude="lon", zoom=15, size=50)
+
+
+# ════════════════════════════════════════════════════════════════════
+# PAGE 1.5 — Hidden Gems du marche (live listings)
+# ════════════════════════════════════════════════════════════════════
+elif page == "🏪 Hidden Gems du marché":
+    st.markdown("## 🏪 Hidden Gems du marché")
+    st.caption(
+        "Annonces actuellement en vente à Paris, scorées par FairSquare — "
+        "gem_score = (prix FairSquare - prix affiché) / prix FairSquare"
+    )
+
+    _live = load_live_scored()
+    if _live is None:
+        st.warning(
+            "Aucune donnée live disponible. "
+            "Lancez `python scripts/scrape_live_listings.py` pour générer les données."
+        )
+    else:
+        _meta = _live.get("metadata", {})
+        _gems = _live.get("gems", [])
+
+        # ── KPIs ──────────────────────────────────────────────────────
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Annonces analysées",  str(_meta.get("nb_annonces_analysees", 0)))
+        k2.metric("Pépites détectées",   str(_meta.get("nb_pepites", 0)))
+        k3.metric("Seuil gem_score",     f"{_meta.get('seuil_gem_score', 0.08)*100:.0f}%")
+        k4.metric("Mise à jour",         _meta.get("date_mise_a_jour", "—"))
+
+        st.divider()
+
+        if not _gems:
+            st.info("Aucune pépite détectée avec le seuil actuel.")
+        else:
+            # ── Table view ────────────────────────────────────────────
+            st.markdown("### Pépites détectées — classées par sous-évaluation")
+
+            df_gems = pd.DataFrame([{
+                "Bien":             g["titre"],
+                "Arr.":             g["arrondissement"],
+                "Surface":          g["surface"],
+                "Prix affiché":     g["prix_annonce"],
+                "Prix FairSquare":  g["prix_predit"],
+                "e/m2 affiché":     g["prix_affiche_m2"],
+                "e/m2 FairSquare":  g["prix_predit_m2"],
+                "Sous-évaluation":  f"{g['sous_evaluation_pct']:.1f}%",
+                "Gain potentiel":   g["gain_potentiel"],
+                "Score":            g["gem_score"],
+                "Source":           g.get("source", "—"),
+            } for g in _gems])
+
+            st.dataframe(
+                df_gems.style.format({
+                    "Prix affiché":    "{:,.0f} €",
+                    "Prix FairSquare": "{:,.0f} €",
+                    "e/m2 affiché":    "{:,.0f} €/m²",
+                    "e/m2 FairSquare": "{:,.0f} €/m²",
+                    "Gain potentiel":  "{:+,.0f} €",
+                    "Score":           "{:.3f}",
+                }).background_gradient(subset=["Score"], cmap="Greens"),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.divider()
+
+            # ── Cards ─────────────────────────────────────────────────
+            st.markdown("### Détail des pépites")
+            for rank, gem in enumerate(_gems, 1):
+                arr_s = f"{gem['arrondissement']}{'er' if gem['arrondissement'] == 1 else 'e'}"
+                pct   = gem["sous_evaluation_pct"]
+                badge_color = "#16a34a" if pct >= 20 else "#2563eb"
+
+                st.markdown(
+                    f'<div style="border:2px solid {badge_color};border-radius:12px;'
+                    f'padding:16px;margin-bottom:14px;background:white">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center">'
+                    f'<div>'
+                    f'<span style="font-weight:700;font-size:1.05em">#{rank} — {gem["titre"]}</span>'
+                    f'<br><span style="color:#6b7280;font-size:0.85em">'
+                    f'{gem["surface"]} m2 · {gem["pieces"]} pièces · Paris {arr_s}</span>'
+                    f'</div>'
+                    f'<div style="background:{badge_color};color:white;padding:8px 16px;'
+                    f'border-radius:20px;font-weight:700;font-size:1.05em">'
+                    f'Sous-eval -{pct:.1f}%</div>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+                gc1, gc2, gc3, gc4 = st.columns(4)
+                gc1.metric("Prix affiché",    f"{int(gem['prix_annonce']):,} €")
+                gc2.metric("Prix FairSquare", f"{int(gem['prix_predit']):,} €",
+                           delta=f"+{int(gem['gain_potentiel']):,} €")
+                gc3.metric("e/m2 affiché",    f"{int(gem['prix_affiche_m2']):,} €/m2")
+                gc4.metric("e/m2 prédit",     f"{int(gem['prix_predit_m2']):,} €/m2")
+
+                st.markdown("---")
+
+            # ── Scatter: gems vs prix prédit ──────────────────────────
+            st.markdown("### Positionnement des pépites")
+            fig_live = go.Figure()
+            fig_live.add_trace(go.Scatter(
+                x=[g["surface"] for g in _gems],
+                y=[g["prix_affiche_m2"] for g in _gems],
+                mode="markers+text",
+                marker=dict(color="#f59e0b", size=14, symbol="diamond"),
+                text=[f"#{i+1}" for i in range(len(_gems))],
+                textposition="top center",
+                name="Prix affiché",
+            ))
+            fig_live.add_trace(go.Scatter(
+                x=[g["surface"] for g in _gems],
+                y=[g["prix_predit_m2"] for g in _gems],
+                mode="markers",
+                marker=dict(color="#22c55e", size=10, symbol="circle"),
+                name="Prix FairSquare",
+            ))
+            for gem in _gems:
+                fig_live.add_shape(
+                    type="line",
+                    x0=gem["surface"], y0=gem["prix_affiche_m2"],
+                    x1=gem["surface"], y1=gem["prix_predit_m2"],
+                    line=dict(color="#9ca3af", width=1.5, dash="dot"),
+                )
+            fig_live.update_layout(
+                title="Prix affiché vs Prix FairSquare — annonces live",
+                xaxis_title="Surface (m2)",
+                yaxis_title="Prix/m2 (€)",
+                plot_bgcolor="white",
+                xaxis=dict(gridcolor="#f3f4f6"),
+                yaxis=dict(gridcolor="#f3f4f6"),
+                height=400,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            st.plotly_chart(fig_live, use_container_width=True)
 
 
 # ════════════════════════════════════════════════════════════════════
