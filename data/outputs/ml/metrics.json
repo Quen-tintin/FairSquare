@@ -89,5 +89,26 @@
     "RMSE": 1943.1,
     "R2": 0.4321,
     "MAPE_%": 15.79
+  },
+  {
+    "model": "LightGBM_v4_baseline",
+    "MAE": 1425.9,
+    "RMSE": 1958.1,
+    "R2": 0.4233,
+    "MAPE_%": 15.89
+  },
+  {
+    "model": "LightGBM_v4_osm",
+    "MAE": 1423.6,
+    "RMSE": 1955.3,
+    "R2": 0.4249,
+    "MAPE_%": 15.86
+  },
+  {
+    "model": "LightGBM_v4_osm_log",
+    "MAE": 1424.9,
+    "RMSE": 1956.8,
+    "R2": 0.4241,
+    "MAPE_%": 15.86
   }
 ]

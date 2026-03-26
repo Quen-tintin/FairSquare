@@ -137,18 +137,131 @@ p, li, .stMarkdown { color: #D0DBF0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Live gem loader ──────────────────────────────────────────────────
-def load_live_gem() -> dict | None:
-    """Charge le top Hidden Gem depuis live_listings_scored.json. Fallback sur APT si absent."""
-    p = ROOT / "src" / "frontend" / "live_listings_scored.json"
-    if p.exists():
-        data = json.loads(p.read_text(encoding="utf-8"))
-        # Supporte format liste plate ou {"gems": [...]}
-        listings = data["gems"] if isinstance(data, dict) else data
-        gems = [l for l in listings if l.get("gem_score", 0) > 0]
-        if gems:
-            return max(gems, key=lambda x: x["gem_score"])
-    return None
+# ── Live gem loader + SHAP ────────────────────────────────────────────
+_LIVE_PATH  = ROOT / "src" / "frontend" / "live_listings_scored.json"
+_MODEL_PATH = ROOT / "models" / "artifacts" / "best_model.pkl"
+
+
+def _compute_shap(surface: float, pieces: int, arrondissement: int,
+                  latitude: float, longitude: float,
+                  prix_m2: float) -> "dict | None":
+    """Return top-6 SHAP contributions {label: €/m²}.  Returns None on any failure."""
+    try:
+        import pickle
+        import shap as _shap
+        from src.ml.features_v2 import add_features, FEATURE_COLS_V2
+
+        if not _MODEL_PATH.exists():
+            return None
+        with open(_MODEL_PATH, "rb") as _f:
+            art = pickle.load(_f)
+
+        row = {
+            "surface_reelle_bati":       surface,
+            "nombre_pieces_principales": pieces,
+            "code_postal":               75000 + arrondissement,
+            "latitude":                  latitude,
+            "longitude":                 longitude,
+            "mois": 6, "trimestre": 2, "annee": 2025,
+            "nombre_lots": 1,
+            "lot1_surface_carrez": surface,
+            "prix_m2": 0.0,
+        }
+        df_feat = add_features(
+            pd.DataFrame([row]),
+            arr_target_enc=art.get("arr_enc"),
+            global_mean=art.get("global_mean", 10015.0),
+        )
+        feat_cols = art.get("feature_cols", FEATURE_COLS_V2)
+        X = df_feat[feat_cols].astype(float)
+
+        model = art["model"]
+        explainer = _shap.TreeExplainer(model)
+        sv = explainer.shap_values(X)[0]   # shape: (n_features,)
+
+        # Convert log-space SHAP → approx €/m²  (φ_i * predicted_m2)
+        sv_eur = {feat_cols[i]: float(sv[i]) * prix_m2 for i in range(len(feat_cols))}
+
+        _LABELS = {
+            "arr_target_enc":            f"Localisation {arrondissement}e arr.",
+            "grid_target_enc":           "Zone géographique fine",
+            "voie_target_enc":           "Rue / voie",
+            "dist_center_km":            "Distance centre Paris",
+            "log_surface":               f"Surface {surface:.0f} m²",
+            "surface_reelle_bati":       f"Surface {surface:.0f} m²",
+            "nombre_pieces_principales": f"{int(pieces)} pièces",
+            "arrondissement":            f"{arrondissement}e arrondissement",
+            "is_premium_arr":            "Arr. premium",
+            "lat_sq":                    "Coord. lat²",
+            "lon_sq":                    "Coord. lon²",
+            "lat_lon_cross":             "Coord. lat×lon",
+            "latitude":                  "Latitude",
+            "longitude":                 "Longitude",
+            "arr_price_x_log_surface":   "Surface × localisation",
+            "annee":                     "Année",
+            "mois":                      "Mois de vente",
+            "trimestre":                 "Trimestre",
+            "nombre_lots":               "Nb. lots immeuble",
+            "pieces_per_m2":             "Densité pièces/m²",
+            "surface_per_piece":         "Surface / pièce",
+            "carrez_ratio":              "Ratio Carrez",
+        }
+        top6 = sorted(sv_eur.items(), key=lambda x: abs(x[1]), reverse=True)[:6]
+        return {_LABELS.get(k, k): round(v) for k, v in top6}
+    except Exception:
+        return None
+
+
+def load_top_gem() -> dict:
+    """Return highest-gem_score listing mapped to APT-compatible keys.
+    Falls back to the static APT dict on any error."""
+    _fb = APT   # snapshot before possible reassignment
+    try:
+        if not _LIVE_PATH.exists():
+            return _fb
+        data  = json.loads(_LIVE_PATH.read_text(encoding="utf-8"))
+        gems  = data["gems"] if isinstance(data, dict) else data
+        gems  = [g for g in gems if g.get("gem_score", 0) > 0]
+        if not gems:
+            return _fb
+        g = max(gems, key=lambda x: x["gem_score"])
+
+        arr     = int(g.get("arrondissement",  _fb["arrondissement"]))
+        surface = float(g.get("surface",       _fb["surface"]))
+        pieces  = int(g.get("pieces",          _fb["pieces"]))
+        lat     = float(g.get("latitude",      _fb["lat"]))
+        lon     = float(g.get("longitude",     _fb["lon"]))
+        p_ann   = int(g.get("prix_annonce",    _fb["prix_affiche"]))
+        p_m2    = int(g.get("prix_predit_m2",  _fb["prix_predit_m2"]))
+        p_tot   = int(g.get("prix_predit",     _fb["prix_predit"]))
+        aff_m2  = int(g.get("prix_affiche_m2", _fb["prix_m2_affiche"]))
+        gain    = int(g.get("gain_potentiel",  _fb["delta_eur"]))
+        decote  = float(g.get("sous_evaluation_pct", _fb["delta_pct"]))
+
+        shap_data = _compute_shap(surface, pieces, arr, lat, lon, p_m2) or _fb["shap"]
+
+        return {
+            **_fb,                      # carry all fallback fields (POIs, neighbourhood…)
+            "titre":           g.get("titre",       _fb["titre"]),
+            "adresse":         f"Paris {arr}{'er' if arr == 1 else 'e'} arrondissement",
+            "surface":         surface,
+            "pieces":          pieces,
+            "arrondissement":  arr,
+            "lat":             lat,
+            "lon":             lon,
+            "prix_affiche":    p_ann,
+            "prix_m2_affiche": aff_m2,
+            "prix_predit":     p_tot,
+            "prix_predit_m2":  p_m2,
+            "delta_eur":       gain,
+            "delta_pct":       decote,
+            "renovation_reasoning": g.get("description", _fb["renovation_reasoning"]),
+            "description":     g.get("description", _fb["description"]),
+            "url":             g.get("url", ""),
+            "shap":            shap_data,
+        }
+    except Exception:
+        return _fb
 
 
 # ── Hardcoded demo apartment ─────────────────────────────────────────
@@ -210,32 +323,23 @@ APT = {
     ),
 }
 
-# ── Override APT avec données live (best-effort) ─────────────────────
-_live = load_live_gem()
-if _live:
-    APT.update({
-        "titre":           _live.get("titre",          APT["titre"]),
-        "arrondissement":  _live.get("arrondissement", APT["arrondissement"]),
-        "surface":         _live.get("surface",        APT["surface"]),
-        "pieces":          _live.get("pieces",         APT["pieces"]),
-        "lat":             _live.get("latitude",       APT["lat"]),
-        "lon":             _live.get("longitude",      APT["lon"]),
-        "prix_affiche":    _live.get("prix_annonce",   APT["prix_affiche"]),
-        "prix_m2_affiche": int(_live.get("prix_annonce", 0) / max(_live.get("surface", 1), 1)),
-        "prix_predit_m2":  int(_live.get("prix_predit_m2", APT["prix_predit_m2"])),
-        "prix_predit":     int(_live.get("prix_predit_m2", APT["prix_predit_m2"]) * _live.get("surface", APT["surface"])),
-        "delta_pct":       round(_live.get("gem_score", 0) * 100, 1),
-        "delta_eur":       int(_live.get("gain_potentiel", APT["delta_eur"])),
-        "description":     _live.get("description",   APT["description"]),
-    })
+# ── Load live top gem (overrides static APT) ─────────────────────────
+APT = load_top_gem()
 
-SHAP_TEXT = (
-    "Cet appartement est estimé **{delta:+,.0f}€ au-dessus du marché** car il bénéficie "
-    "d'une localisation premium dans le **11e arrondissement** (prime de +820€/m²), "
-    "d'un accès exceptionnel aux transports (métro République à 220m, +450€/m²) "
-    "et d'un score de rénovation favorable (2/5 — bon état, +95€/m²). "
-    "Le walkabilité de **87/100** confirme la forte demande sur ce secteur."
-)
+
+def _build_shap_text(apt: dict) -> str:
+    shap = apt.get("shap", {})
+    top2 = sorted(((k, v) for k, v in shap.items() if v > 0), key=lambda x: -x[1])[:2]
+    factors = " · ".join(f"**{k}** (+{v:,.0f} €/m²)" for k, v in top2) if top2 else ""
+    return (
+        f"Cet appartement est estimé **+{apt['delta_eur']:,.0f} € au-dessus du marché** "
+        f"({apt['delta_pct']:.1f}% de décote) d'après notre modèle LightGBM (DVF Paris 67k). "
+        + (f"Principaux facteurs : {factors}. " if factors else "")
+        + f"Arrondissement **{apt['arrondissement']}e** · Walkabilité **{apt['walkability_score']:.0f}/100**."
+    )
+
+
+SHAP_TEXT = _build_shap_text(APT)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -457,43 +561,50 @@ if page == "🔍 Analyse d'annonce":
         )
 
         # Section Vision IA
-        with st.expander("🔍 Analyse Visuelle IA — Score rénovation live", expanded=False):
+        st.markdown("#### 🔍 Analyse Visuelle IA (Gemini)")
+        _RENO_IMPACT = {1: +200, 2: +100, 3: 0, 4: -200, 5: -500}
+        import os as _os
+        _api_key = _os.getenv("GOOGLE_API_KEY", "") or _os.getenv("GEMINI_API_KEY", "")
+        _vision_score    = APT["renovation_score"]
+        _vision_reason   = APT["renovation_reasoning"]
+        _vision_model    = "—"
+        if _api_key:
             try:
-                import os
-                api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
-                if api_key:
-                    img_url = (_live.get("image_url", "") if _live else "") or ""
-                    if not img_url:
-                        img_url = "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=400"
-
-                    from src.vision.renovation_scorer import RenovationScorer
-                    scorer = RenovationScorer()
-                    vision_result = scorer.score_from_url(img_url)
-                    score = vision_result.renovation_score
-                    reasoning = vision_result.reasoning
-                    price_impact = (score - 3) * -50  # score 1=+100€/m², 5=-100€/m²
-
-                    col_v1, col_v2 = st.columns([1, 2])
-                    with col_v1:
-                        st.markdown(reno_html(score), unsafe_allow_html=True)
-                        impact_color = "#00D4AA" if price_impact >= 0 else "#ef4444"
-                        st.markdown(
-                            f'<div style="color:{impact_color};font-weight:700">'
-                            f'Impact prix: {price_impact:+d}€/m²</div>',
-                            unsafe_allow_html=True,
-                        )
-                    with col_v2:
-                        st.markdown(
-                            f'<div style="color:#94a3b8;font-size:0.88em">{reasoning}</div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.info("🔑 GOOGLE_API_KEY non configurée — score rénovation estimé manuellement")
-                    st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
-                    st.caption(APT["renovation_reasoning"])
+                _img_url = "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=600&q=80"
+                from src.vision.renovation_scorer import RenovationScorer
+                @st.cache_data(show_spinner="Gemini Vision…")
+                def _run_vision(url: str) -> dict:
+                    return RenovationScorer().score_from_url(url).to_dict()
+                _vr = _run_vision(_img_url)
+                _vision_score  = _vr["renovation_score"]
+                _vision_reason = _vr["reasoning"]
+                _vision_model  = _vr.get("model_used", "Gemini")
             except Exception:
-                st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
-                st.caption(APT["renovation_reasoning"])
+                pass
+        _impact    = _RENO_IMPACT.get(_vision_score, 0)
+        _imp_color = "#00D4AA" if _impact >= 0 else "#EF4444"
+        _imp_sign  = "+" if _impact >= 0 else ""
+        col_v1, col_v2 = st.columns([1, 2])
+        with col_v1:
+            st.markdown(reno_html(_vision_score), unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="margin-top:6px;font-size:0.85em">'
+                f'<span style="color:#8899BB">Impact estimé :</span> '
+                f'<span style="color:{_imp_color};font-weight:700">'
+                f'{_imp_sign}{_impact:,} €/m²</span></div>',
+                unsafe_allow_html=True,
+            )
+        with col_v2:
+            st.markdown(
+                f'<div style="background:#131929;border-left:3px solid #00D4AA;'
+                f'padding:10px 14px;border-radius:0 8px 8px 0;'
+                f'color:#C4D0E8;font-size:0.85em;line-height:1.5">'
+                f'{_vision_reason}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if not _api_key:
+                st.caption("Vision IA désactivée — configurez GEMINI_API_KEY pour l'activer")
 
         st.markdown("#### 📋 Caractéristiques")
         m1, m2, m3 = st.columns(3)
@@ -567,7 +678,7 @@ if page == "🔍 Analyse d'annonce":
         st.markdown(
             f'<div style="background:#0D1F1A;border:1px solid #00D4AA33;border-radius:10px;'
             f'padding:12px 16px;color:#C4D0E8;font-size:0.88em;line-height:1.6">'
-            f'{SHAP_TEXT.format(delta=APT["delta_eur"])}'
+            f'{SHAP_TEXT}'
             f'</div>',
             unsafe_allow_html=True,
         )
