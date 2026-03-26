@@ -10,6 +10,7 @@ class PredictionRequest(BaseModel):
     arrondissement: int = Field(..., ge=1, le=20, description="Arrondissement Paris (1-20)")
     latitude: float = Field(..., ge=48.7, le=49.0, description="Latitude WGS84")
     longitude: float = Field(..., ge=2.0, le=2.7, description="Longitude WGS84")
+    annee: int | None = Field(default=None, ge=2020, le=2030, description="Année de la transaction (défaut: année courante)")
     mois: int = Field(default=6, ge=1, le=12, description="Mois de la transaction (1-12)")
     trimestre: int = Field(default=2, ge=1, le=4, description="Trimestre (1-4)")
     nombre_lots: int = Field(default=1, ge=1, le=10, description="Nombre de lots")

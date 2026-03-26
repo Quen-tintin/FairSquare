@@ -43,12 +43,15 @@ def _load_artifact() -> dict[str, Any] | None:
 
 def _build_input_df(req: PredictionRequest) -> pd.DataFrame:
     """Convert a PredictionRequest into a single-row DataFrame."""
+    import datetime
+    annee = req.annee if req.annee is not None else datetime.datetime.now().year
     return pd.DataFrame([{
         "code_postal":               75000 + req.arrondissement,
         "surface_reelle_bati":       req.surface,
         "nombre_pieces_principales": req.pieces,
         "latitude":                  req.latitude,
         "longitude":                 req.longitude,
+        "annee":                     annee,
         "mois":                      req.mois,
         "trimestre":                 req.trimestre,
         "nombre_lots":               req.nombre_lots,
@@ -82,6 +85,7 @@ def _shap_contributions(model: Any, X: pd.DataFrame) -> list[ShapContribution]:
             "dist_center_km":          "Distance centre",
             "longitude":               "Longitude",
             "latitude":                "Latitude",
+            "annee":                   "Année transaction",
             "mois":                    "Mois",
             "trimestre":               "Trimestre",
             "nombre_lots":             "Nb lots",
