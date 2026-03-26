@@ -33,6 +33,110 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Global dark UI CSS ───────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ─ Base ─ */
+.stApp { background-color: #0A0E1A !important; color: #F0F4FF !important; }
+.main .block-container { padding-top: 1.5rem; }
+body { background-color: #0A0E1A !important; }
+
+/* ─ Sidebar ─ */
+[data-testid="stSidebar"] { background: #0D1525 !important; border-right: 1px solid #1E2D45 !important; }
+[data-testid="stSidebar"] * { color: #F0F4FF !important; }
+[data-testid="stSidebarContent"] { background: #0D1525 !important; }
+
+/* ─ Metric cards ─ */
+[data-testid="metric-container"] {
+    background: #131929 !important;
+    border: 1px solid #1E2D45 !important;
+    border-radius: 12px !important;
+    padding: 16px !important;
+}
+[data-testid="stMetricLabel"] { color: #8899BB !important; font-size: 0.78em !important; text-transform: uppercase; letter-spacing: 0.6px; }
+[data-testid="stMetricValue"] { color: #F0F4FF !important; font-weight: 700 !important; }
+[data-testid="stMetricDelta"] svg { fill: #00D4AA !important; }
+
+/* ─ Buttons ─ */
+.stButton > button {
+    background: linear-gradient(135deg, #00D4AA, #0095FF) !important;
+    color: #0A0E1A !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    border: none !important;
+    letter-spacing: 0.3px;
+    transition: opacity 0.2s;
+}
+.stButton > button:hover { opacity: 0.85 !important; }
+[data-testid="stFormSubmitButton"] > button {
+    background: linear-gradient(135deg, #00D4AA, #0095FF) !important;
+    color: #0A0E1A !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    border: none !important;
+}
+
+/* ─ Headings ─ */
+h1, h2, h3, h4, h5, h6 { color: #F0F4FF !important; letter-spacing: 0.5px; }
+h1 { font-weight: 800 !important; }
+h2 { font-weight: 700 !important; }
+
+/* ─ Dividers ─ */
+hr { border-color: #1E2D45 !important; opacity: 1 !important; }
+
+/* ─ Inputs ─ */
+[data-baseweb="select"] > div { background: #131929 !important; border-color: #1E2D45 !important; color: #F0F4FF !important; }
+[data-baseweb="input"] > div { background: #131929 !important; border-color: #1E2D45 !important; }
+[data-baseweb="input"] input { color: #F0F4FF !important; }
+[data-baseweb="popover"] { background: #131929 !important; }
+[data-baseweb="menu"] { background: #131929 !important; }
+[data-baseweb="menu"] li { color: #F0F4FF !important; }
+[data-baseweb="menu"] li:hover { background: #1E2D45 !important; }
+.stNumberInput input { background: #131929 !important; border-color: #1E2D45 !important; color: #F0F4FF !important; }
+
+/* ─ Slider ─ */
+[data-testid="stSlider"] { color: #F0F4FF !important; }
+[data-testid="stSlider"] [data-testid="stTickBar"] { background: #1E2D45 !important; }
+
+/* ─ Alerts (info / success / warning / error) ─ */
+.stAlert { border-radius: 10px !important; }
+div[data-testid="stNotification"] { background: #131929 !important; }
+[data-baseweb="notification"] { background: #131929 !important; border-left-color: #00D4AA !important; }
+
+/* ─ Radio nav ─ */
+[data-testid="stRadio"] label { color: #C4D0E8 !important; padding: 5px 0; font-size: 0.95em; }
+[data-testid="stRadio"] label:hover { color: #00D4AA !important; cursor: pointer; }
+
+/* ─ Captions ─ */
+.stCaption, [data-testid="stCaptionContainer"] { color: #8899BB !important; }
+
+/* ─ Expander ─ */
+[data-testid="stExpander"] { background: #131929 !important; border: 1px solid #1E2D45 !important; border-radius: 10px !important; }
+[data-testid="stExpander"] summary { color: #F0F4FF !important; }
+
+/* ─ Dataframe ─ */
+.stDataFrame { background: #131929 !important; }
+iframe[title="st.dataframe"] { background: #131929 !important; }
+
+/* ─ Spinner ─ */
+.stSpinner > div { border-top-color: #00D4AA !important; }
+
+/* ─ Gem badge utility class ─ */
+.gem-badge {
+    background: linear-gradient(135deg, #00D4AA, #0095FF);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-weight: 800;
+    font-size: 1.1em;
+    color: #0A0E1A;
+    display: inline-block;
+}
+
+/* ─ Paragraph text ─ */
+p, li, .stMarkdown { color: #D0DBF0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── Hardcoded demo apartment ─────────────────────────────────────────
 APT = {
     "titre":               "Appartement 3 pièces — Bastille / République",
@@ -168,14 +272,16 @@ def reno_html(score: int) -> str:
 
 
 def price_card(label: str, price: int, price_m2: int,
-               border_color: str = "#e5e7eb",
-               bg: str = "white", text_color: str = "#1f2937") -> str:
+               border_color: str = "#1E2D45",
+               bg: str = "#131929", text_color: str = "#F0F4FF") -> str:
     return (
-        f'<div style="border:2px solid {border_color};border-radius:10px;'
-        f'padding:16px;text-align:center;background:{bg}">'
-        f'<div style="color:#6b7280;font-size:0.8em;margin-bottom:4px">{label}</div>'
-        f'<div style="font-size:1.9em;font-weight:700;color:{text_color}">{price:,} €</div>'
-        f'<div style="color:#9ca3af;font-size:0.85em">{price_m2:,} €/m²</div>'
+        f'<div style="border:2px solid {border_color};border-radius:12px;'
+        f'padding:20px;text-align:center;background:{bg}">'
+        f'<div style="color:#8899BB;font-size:0.72em;font-weight:600;text-transform:uppercase;'
+        f'letter-spacing:1.2px;margin-bottom:8px">{label}</div>'
+        f'<div style="font-size:2em;font-weight:800;color:{text_color};letter-spacing:-0.5px">'
+        f'{price:,} €</div>'
+        f'<div style="color:#8899BB;font-size:0.85em;margin-top:4px">{price_m2:,} €/m²</div>'
         f'</div>'
     )
 
@@ -183,12 +289,34 @@ def price_card(label: str, price: int, price_m2: int,
 # ── Sidebar ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
-        '<div style="font-size:2em;font-weight:800;letter-spacing:-1px">'
-        '🏠 FairSquare</div>',
+        '<div style="padding:12px 0 8px 0">'
+        '<span style="color:#00D4AA;font-size:1.5em;font-weight:800;letter-spacing:1px">'
+        '◆ FAIRSQUARE</span>'
+        '<div style="color:#8899BB;font-size:0.75em;letter-spacing:2px;margin-top:2px">'
+        'AI REAL ESTATE INTELLIGENCE</div>'
+        '</div>',
         unsafe_allow_html=True,
     )
-    st.caption("Hidden Gems · Île-de-France")
     st.divider()
+
+    # KPI strip
+    st.markdown(
+        '<div style="background:#131929;border:1px solid #1E2D45;border-radius:10px;padding:12px 14px;margin-bottom:12px">'
+        '<div style="font-size:0.7em;color:#8899BB;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Données du marché</div>'
+        '<div style="color:#F0F4FF;font-weight:700;font-size:1em">67 292 <span style="color:#8899BB;font-weight:400;font-size:0.8em">transactions</span></div>'
+        '<div style="color:#8899BB;font-size:0.75em;margin-top:1px">DVF Paris · 2023–2025</div>'
+        '<div style="margin-top:8px;border-top:1px solid #1E2D45;padding-top:8px">'
+        '<span style="color:#00D4AA;font-weight:700">MAE 1 417 €/m²</span>'
+        ' <span style="color:#8899BB;font-size:0.8em">· R² 0.43</span>'
+        '</div>'
+        '<div style="margin-top:6px">'
+        '<span style="background:linear-gradient(135deg,#00D4AA22,#0095FF22);border:1px solid #00D4AA55;'
+        'color:#00D4AA;border-radius:20px;padding:2px 10px;font-size:0.78em;font-weight:700">'
+        '💎 6 pépites détectées aujourd\'hui</span>'
+        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     page = st.radio(
         "Navigation",
@@ -203,12 +331,26 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown("**Stack technique**")
-    st.caption("LightGBM · SHAP · Gemini Vision · OSM")
-    st.markdown("**Données**")
-    st.caption("DVF 2023–2025 · 67 292 transactions Paris")
+
+    # How it works
+    st.markdown(
+        '<div style="font-size:0.72em;color:#8899BB;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px">'
+        'Comment ça marche</div>'
+        '<div style="font-size:0.82em;color:#C4D0E8;line-height:1.7">'
+        '<span style="color:#00D4AA;font-weight:700">①</span> Scraping annonces SeLoger/PAP<br>'
+        '<span style="color:#00D4AA;font-weight:700">②</span> Prédiction LightGBM (DVF 67k)<br>'
+        '<span style="color:#00D4AA;font-weight:700">③</span> Score Hidden Gem = décote %'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
     st.divider()
-    st.caption("Capstone IA — 2024/2025")
+    st.markdown(
+        '<div style="font-size:0.72em;color:#8899BB;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px">'
+        'Stack</div>'
+        '<div style="font-size:0.78em;color:#8899BB">LightGBM · SHAP · Gemini Vision · OSM</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -216,22 +358,42 @@ with st.sidebar:
 # ════════════════════════════════════════════════════════════════════
 if page == "🔍 Analyse d'annonce":
 
-    # ── Header ───────────────────────────────────────────────────────
-    col_title, col_badge = st.columns([3, 1])
-    with col_title:
-        st.markdown(f"## {APT['titre']}")
-        st.markdown(f"📍 `{APT['adresse']}`   ·   {APT['surface']} m²   ·   {APT['pieces']} pièces   ·   {APT['etage']}e étage")
-    with col_badge:
-        st.markdown(
-            f'<div style="background:linear-gradient(135deg,#16a34a,#22c55e);'
-            f'color:white;padding:14px;border-radius:14px;text-align:center;'
-            f'box-shadow:0 4px 12px rgba(34,197,94,0.3)">'
-            f'<div style="font-size:1.4em">💎</div>'
-            f'<div style="font-weight:700;font-size:1.05em">HIDDEN GEM</div>'
-            f'<div style="font-size:0.8em;opacity:0.9">Sous-évalué de {APT["delta_pct"]:.1f}%</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+    # ── Hero header ───────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:16px;'
+        f'padding:24px 28px;margin-bottom:20px">'
+        f'<div style="text-align:center;margin-bottom:16px">'
+        f'<span style="background:linear-gradient(135deg,#00D4AA,#0095FF);color:#0A0E1A;'
+        f'border-radius:20px;padding:5px 18px;font-weight:800;font-size:0.9em;letter-spacing:1px">'
+        f'🔥 HIDDEN GEM · +{APT["delta_pct"]:.1f}% SOUS-ÉVALUÉ</span>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px">'
+        f'<div>'
+        f'<h1 style="color:#F0F4FF;font-size:1.6em;font-weight:800;margin:0 0 4px 0">{APT["titre"]}</h1>'
+        f'<div style="color:#00D4AA;font-weight:600;font-size:0.95em">📍 {APT["adresse"]}</div>'
+        f'</div>'
+        f'<div style="display:flex;gap:20px;flex-wrap:wrap">'
+        f'<div style="text-align:center">'
+        f'<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1px">Surface</div>'
+        f'<div style="color:#F0F4FF;font-weight:700;font-size:1.2em">{APT["surface"]} m²</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1px">Pièces</div>'
+        f'<div style="color:#F0F4FF;font-weight:700;font-size:1.2em">{APT["pieces"]}</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1px">Prix affiché</div>'
+        f'<div style="color:#F0F4FF;font-weight:700;font-size:1.2em">{APT["prix_affiche"]:,} €</div>'
+        f'</div>'
+        f'<div style="text-align:center">'
+        f'<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1px">Prix/m²</div>'
+        f'<div style="color:#F0F4FF;font-weight:700;font-size:1.2em">{APT["prix_m2_affiche"]:,} €</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     st.divider()
 
@@ -253,9 +415,9 @@ if page == "🔍 Analyse d'annonce":
         st.markdown("#### 🔨 Score de rénovation — Vision IA (Gemini)")
         st.markdown(reno_html(APT["renovation_score"]), unsafe_allow_html=True)
         st.markdown(
-            f'<div style="background:#f9fafb;border-left:3px solid #84cc16;'
-            f'padding:10px 14px;border-radius:0 6px 6px 0;margin-top:6px;'
-            f'color:#374151;font-size:0.88em">'
+            f'<div style="background:#131929;border-left:3px solid #00D4AA;'
+            f'padding:10px 14px;border-radius:0 8px 8px 0;margin-top:6px;'
+            f'color:#C4D0E8;font-size:0.88em">'
             f'{APT["renovation_reasoning"]}'
             f'</div>',
             unsafe_allow_html=True,
@@ -282,31 +444,61 @@ if page == "🔍 Analyse d'annonce":
     with col_right:
 
         # Prix affiché vs prédit
-        st.markdown("#### 💰 Évaluation du prix")
+        st.markdown(
+            '<div style="color:#8899BB;font-size:0.72em;font-weight:600;text-transform:uppercase;'
+            'letter-spacing:1.2px;margin-bottom:10px">💰 ÉVALUATION DU PRIX</div>',
+            unsafe_allow_html=True,
+        )
         pc1, pc2 = st.columns(2)
         with pc1:
             st.markdown(
-                price_card("Prix affiché", APT["prix_affiche"], APT["prix_m2_affiche"]),
+                price_card(
+                    "PRIX AFFICHÉ",
+                    APT["prix_affiche"], APT["prix_m2_affiche"],
+                    border_color="#EF444455", bg="#1A0F0F",
+                    text_color="#FCA5A5",
+                ),
                 unsafe_allow_html=True,
             )
         with pc2:
             st.markdown(
                 price_card(
-                    "Prix prédit · LightGBM",
+                    "VALEUR ESTIMÉE FAIRSQUARE",
                     APT["prix_predit"], APT["prix_predit_m2"],
-                    border_color="#22c55e", bg="#f0fdf4", text_color="#166534",
+                    border_color="#00D4AA88", bg="#0D1F1A",
+                    text_color="#00D4AA",
                 ),
                 unsafe_allow_html=True,
             )
 
-        st.success(
-            f"**Opportunité : +{APT['delta_eur']:,} €** sous la valeur estimée "
-            f"({APT['delta_pct']:.1f}% de décote)"
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg,#00D4AA15,#0095FF15);'
+            f'border:1px solid #00D4AA44;border-radius:10px;padding:12px 16px;margin-top:10px;'
+            f'text-align:center">'
+            f'<span style="color:#00D4AA;font-weight:800;font-size:1.1em">'
+            f'↑ GAIN POTENTIEL +{APT["delta_eur"] // 1000}k€</span>'
+            f'<span style="color:#8899BB;font-size:0.85em;margin-left:8px">'
+            f'({APT["delta_pct"]:.1f}% de décote)</span>'
+            f'</div>',
+            unsafe_allow_html=True,
         )
 
         # XAI block
-        st.markdown("#### 🧠 Explication IA — SHAP")
-        st.info(SHAP_TEXT.format(delta=APT["delta_eur"]))
+        st.markdown(
+            '<div style="background:#131929;border:1px solid #1E2D45;border-radius:10px;'
+            'padding:8px 14px;margin-bottom:6px">'
+            '<span style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px">'
+            '🧠 POURQUOI CE PRIX ?</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="background:#0D1F1A;border:1px solid #00D4AA33;border-radius:10px;'
+            f'padding:12px 16px;color:#C4D0E8;font-size:0.88em;line-height:1.6">'
+            f'{SHAP_TEXT.format(delta=APT["delta_eur"])}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         # Waterfall SHAP chart
         base = APT["prix_predit_m2"] - sum(APT["shap"].values())
@@ -319,34 +511,37 @@ if page == "🔍 Analyse d'annonce":
             measure=measures,
             y=labels,
             x=values,
-            connector={"mode": "between", "line": {"width": 1, "color": "#d1d5db"}},
-            increasing={"marker": {"color": "#22c55e"}},
-            decreasing={"marker": {"color": "#ef4444"}},
-            totals={"marker":    {"color": "#6366f1"}},
+            connector={"mode": "between", "line": {"width": 1, "color": "#1E2D45"}},
+            increasing={"marker": {"color": "#00D4AA"}},
+            decreasing={"marker": {"color": "#EF4444"}},
+            totals={"marker":    {"color": "#0095FF"}},
             text=[f"{v:+,.0f} €/m²" if i > 0 else f"{v:,.0f} €/m²" for i, v in enumerate(values)],
             textposition="outside",
+            textfont={"color": "#F0F4FF"},
         ))
         fig_shap.update_layout(
-            title="Contributions SHAP au prix prédit (€/m²)",
+            title=dict(text="Contributions SHAP au prix prédit (€/m²)", font=dict(color="#F0F4FF")),
             height=310,
             margin=dict(l=170, r=90, t=40, b=10),
             showlegend=False,
-            plot_bgcolor="white",
-            xaxis=dict(gridcolor="#f3f4f6", showgrid=True),
-            yaxis=dict(autorange="reversed"),
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            xaxis=dict(gridcolor="#1E2D45", showgrid=True, color="#8899BB"),
+            yaxis=dict(autorange="reversed", color="#C4D0E8"),
         )
         st.plotly_chart(fig_shap, use_container_width=True)
 
         # Neighbourhood vibe
         st.markdown("#### 🌆 Vibe du quartier (OSM + LLM)")
         st.markdown(
-            f'<div style="display:flex;align-items:flex-start;gap:14px;padding:14px;'
-            f'background:#fef9c3;border-radius:12px;border:1px solid #fde68a">'
-            f'<span style="font-size:2.2em;line-height:1">⚡</span>'
+            f'<div style="display:flex;align-items:flex-start;gap:14px;padding:16px;'
+            f'background:#131929;border-radius:12px;border:1px solid #1E2D45">'
+            f'<span style="font-size:2em;line-height:1">⚡</span>'
             f'<div>'
-            f'<div style="font-weight:700;font-size:1.1em;color:#713f12">'
-            f'Vibe du quartier : <em>{APT["neighborhood_vibe"]}</em></div>'
-            f'<div style="color:#92400e;font-size:0.85em;margin-top:4px">'
+            f'<div style="font-weight:700;font-size:1em;color:#F0F4FF">'
+            f'Vibe du quartier : <span style="color:#00D4AA">{APT["neighborhood_vibe"]}</span></div>'
+            f'<div style="color:#8899BB;font-size:0.85em;margin-top:5px">'
             f'{APT["neighborhood_summary"]}</div>'
             f'</div></div>',
             unsafe_allow_html=True,
@@ -374,10 +569,15 @@ if page == "🔍 Analyse d'annonce":
 # PAGE 2 — Recommandeur Hidden Gems
 # ════════════════════════════════════════════════════════════════════
 elif page == "💎 Recommandeur Hidden Gems":
-    st.markdown("## 💎 Recommandeur Hidden Gems")
-    st.caption(
-        "Trouvez des biens sous-évalués dans le marché parisien — "
-        "score Hidden Gem = (prix prédit − prix transaction) / prix prédit"
+    st.markdown(
+        '<div style="margin-bottom:6px">'
+        '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
+        '◆ FAIRSQUARE · DÉTECTION AUTOMATIQUE</span>'
+        '</div>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:0">💎 Hidden Gems du Marché</h2>'
+        '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
+        'Biens sous-évalués · Score = (prix prédit − prix réel) / prix prédit</p>',
+        unsafe_allow_html=True,
     )
 
     st.divider()
@@ -444,22 +644,31 @@ elif page == "💎 Recommandeur Hidden Gems":
                 st.success(f"**{len(gems)} Hidden Gem(s) trouvé(s)** — triés par score de décote")
 
                 for gem in gems:
-                    decote_color = "#16a34a" if gem.decote_pct >= 20 else "#2563eb"
+                    if gem.decote_pct >= 20:
+                        badge_grad = "linear-gradient(135deg,#00D4AA,#0095FF)"
+                        card_border = "#00D4AA55"
+                    elif gem.decote_pct >= 15:
+                        badge_grad = "linear-gradient(135deg,#0095FF,#6366F1)"
+                        card_border = "#0095FF55"
+                    else:
+                        badge_grad = "linear-gradient(135deg,#6366F1,#A855F7)"
+                        card_border = "#6366F155"
                     with st.container():
                         st.markdown(
-                            f'<div style="border:2px solid {decote_color};border-radius:12px;'
-                            f'padding:16px;margin-bottom:12px;background:white">'
-                            f'<div style="display:flex;justify-content:space-between;align-items:center">'
+                            f'<div style="border:1px solid {card_border};border-radius:14px;'
+                            f'padding:18px 20px;margin-bottom:14px;background:#131929">'
+                            f'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
                             f'<div>'
-                            f'<span style="font-weight:700;font-size:1.05em">#{gem.rank} — {gem.adresse}</span>'
-                            f'<br><span style="color:#6b7280;font-size:0.85em">'
+                            f'<span style="font-weight:700;font-size:1.05em;color:#F0F4FF">'
+                            f'#{gem.rank} — {gem.adresse}</span>'
+                            f'<br><span style="color:#8899BB;font-size:0.83em">'
                             f'{gem.surface} m² · {gem.pieces} pièces · '
                             f'Paris {gem.arrondissement}{"er" if gem.arrondissement == 1 else "e"}'
                             f' · Transaction mois {gem.mois_transaction}</span>'
                             f'</div>'
                             f'<div style="text-align:right">'
-                            f'<div style="background:{decote_color};color:white;padding:8px 16px;'
-                            f'border-radius:20px;font-weight:700;font-size:1.1em">'
+                            f'<div style="background:{badge_grad};color:#0A0E1A;padding:7px 16px;'
+                            f'border-radius:20px;font-weight:800;font-size:1em;white-space:nowrap">'
                             f'💎 -{gem.decote_pct:.1f}% sous-évalué</div>'
                             f'</div></div>'
                             f'</div>',
@@ -509,14 +718,17 @@ elif page == "💎 Recommandeur Hidden Gems":
                         line=dict(color="#9ca3af", width=1.5, dash="dot"))
 
                 fig_gems.update_layout(
-                    title="Prix transaction vs Prix prédit — Hidden Gems identifiés",
+                    title=dict(text="Prix transaction vs Prix prédit — Hidden Gems identifiés", font=dict(color="#F0F4FF")),
                     xaxis_title="Surface (m²)",
                     yaxis_title="Prix/m² (€)",
-                    plot_bgcolor="white",
-                    xaxis=dict(gridcolor="#f3f4f6"),
-                    yaxis=dict(gridcolor="#f3f4f6"),
+                    paper_bgcolor="#0A0E1A",
+                    plot_bgcolor="#131929",
+                    font=dict(color="#C4D0E8"),
+                    xaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+                    yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
                     height=400,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                                font=dict(color="#C4D0E8"), bgcolor="#131929", bordercolor="#1E2D45"),
                 )
                 st.plotly_chart(fig_gems, use_container_width=True)
 
@@ -560,10 +772,13 @@ elif page == "💎 Recommandeur Hidden Gems":
                 color_continuous_scale="RdYlGn_r",
             )
             fig_arr_bar.update_layout(
-                plot_bgcolor="white",
-                yaxis=dict(gridcolor="#f3f4f6"),
+                paper_bgcolor="#0A0E1A",
+                plot_bgcolor="#131929",
+                font=dict(color="#C4D0E8"),
+                yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+                xaxis=dict(tickmode="linear", tick0=1, dtick=1, color="#8899BB"),
                 coloraxis_showscale=False,
-                xaxis=dict(tickmode="linear", tick0=1, dtick=1),
+                title_font=dict(color="#F0F4FF"),
             )
             st.plotly_chart(fig_arr_bar, use_container_width=True)
 
@@ -572,8 +787,14 @@ elif page == "💎 Recommandeur Hidden Gems":
 # PAGE 3 — Performance modèle
 # ════════════════════════════════════════════════════════════════════
 elif page == "📊 Performance modèle":
-    st.markdown("## 📊 Performance du modèle ML")
-    st.caption("Tournoi LinearRegression vs GAM vs LightGBM — DVF Paris 2023")
+    st.markdown(
+        '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
+        '◆ FAIRSQUARE · MACHINE LEARNING</span>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">📊 BENCHMARK · De Linear à LightGBM</h2>'
+        '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
+        'LinearRegression vs GAM vs LightGBM · DVF Paris 2023–2025</p>',
+        unsafe_allow_html=True,
+    )
 
     metrics    = load_metrics()
     df_metrics = pd.DataFrame(metrics)
@@ -597,17 +818,23 @@ elif page == "📊 Performance modèle":
             df_metrics, x="model", y="MAE",
             color="model",
             color_discrete_map={
-                "LinearRegression": "#94a3b8",
-                "GAM":              "#64748b",
-                "LightGBM":         "#6366f1",
+                "LinearRegression": "#4A5568",
+                "GAM":              "#718096",
+                "LightGBM":         "#00D4AA",
             },
             text="MAE",
-            title="MAE (€/m²) — plus bas = meilleur",
+            title="BENCHMARK · MAE (€/m²) — plus bas = meilleur",
         )
-        fig_mae.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
+        fig_mae.update_traces(texttemplate="%{text:,.0f}", textposition="outside",
+                              textfont=dict(color="#F0F4FF"))
         fig_mae.update_layout(
-            showlegend=False, plot_bgcolor="white",
-            yaxis=dict(gridcolor="#f3f4f6"),
+            showlegend=False,
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            xaxis=dict(color="#8899BB"),
+            title_font=dict(color="#F0F4FF"),
         )
         st.plotly_chart(fig_mae, use_container_width=True)
 
@@ -616,17 +843,23 @@ elif page == "📊 Performance modèle":
             df_metrics, x="model", y="R2",
             color="model",
             color_discrete_map={
-                "LinearRegression": "#94a3b8",
-                "GAM":              "#64748b",
-                "LightGBM":         "#6366f1",
+                "LinearRegression": "#4A5568",
+                "GAM":              "#718096",
+                "LightGBM":         "#0095FF",
             },
             text="R2",
-            title="R² Score — plus haut = meilleur",
+            title="BENCHMARK · R² Score — plus haut = meilleur",
         )
-        fig_r2.update_traces(texttemplate="%{text:.3f}", textposition="outside")
+        fig_r2.update_traces(texttemplate="%{text:.3f}", textposition="outside",
+                             textfont=dict(color="#F0F4FF"))
         fig_r2.update_layout(
-            showlegend=False, plot_bgcolor="white",
-            yaxis=dict(gridcolor="#f3f4f6"),
+            showlegend=False,
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            xaxis=dict(color="#8899BB"),
+            title_font=dict(color="#F0F4FF"),
         )
         st.plotly_chart(fig_r2, use_container_width=True)
 
@@ -670,10 +903,13 @@ elif page == "📊 Performance modèle":
 # PAGE 3 — Analyse des erreurs  (Priority 3 — jury ask)
 # ════════════════════════════════════════════════════════════════════
 elif page == "📈 Analyse des erreurs":
-    st.markdown("## 📈 Analyse des erreurs — Le piège des m²")
-    st.caption(
-        "Réponse directe à la question du jury : "
-        "comment le modèle se comporte-t-il selon la surface ?"
+    st.markdown(
+        '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
+        '◆ FAIRSQUARE · ANALYSE CRITIQUE</span>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">📈 Analyse des erreurs — Le piège des m²</h2>'
+        '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
+        'Comment le modèle se comporte-t-il selon la surface ?</p>',
+        unsafe_allow_html=True,
     )
 
     results = fit_error_model()
@@ -712,10 +948,14 @@ elif page == "📈 Analyse des erreurs":
             fig_scatter.add_hline(y=0, line_dash="dash", line_color="#6b7280",
                                   annotation_text="Erreur nulle")
             fig_scatter.update_layout(
-                plot_bgcolor="white",
-                xaxis=dict(gridcolor="#f3f4f6", range=[0, 250]),
-                yaxis=dict(gridcolor="#f3f4f6"),
-                coloraxis_colorbar=dict(title="Erreur"),
+                paper_bgcolor="#0A0E1A",
+                plot_bgcolor="#131929",
+                font=dict(color="#C4D0E8"),
+                xaxis=dict(gridcolor="#1E2D45", range=[0, 250], color="#8899BB"),
+                yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+                coloraxis_colorbar=dict(title="Erreur", tickfont=dict(color="#C4D0E8"),
+                                        titlefont=dict(color="#C4D0E8")),
+                title_font=dict(color="#F0F4FF"),
             )
             st.plotly_chart(fig_scatter, use_container_width=True)
 
@@ -743,9 +983,14 @@ elif page == "📈 Analyse des erreurs":
         )
         fig_bucket.update_traces(texttemplate="%{text:.0f}", textposition="outside")
         fig_bucket.update_layout(
-            showlegend=False, plot_bgcolor="white",
-            yaxis=dict(gridcolor="#f3f4f6"),
+            showlegend=False,
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            xaxis=dict(color="#8899BB"),
             coloraxis_showscale=False,
+            title_font=dict(color="#F0F4FF"),
         )
         st.plotly_chart(fig_bucket, use_container_width=True)
 
@@ -758,8 +1003,16 @@ elif page == "📈 Analyse des erreurs":
             labels={"erreur": "Erreur (prédit − réel) €/m²", "count": "Fréquence"},
             color_discrete_sequence=["#6366f1"],
         )
-        fig_hist.add_vline(x=0, line_dash="dash", line_color="red", annotation_text="Biais nul")
-        fig_hist.update_layout(plot_bgcolor="white", yaxis=dict(gridcolor="#f3f4f6"))
+        fig_hist.add_vline(x=0, line_dash="dash", line_color="#EF4444",
+                           annotation_text="Biais nul", annotation_font_color="#EF4444")
+        fig_hist.update_layout(
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            xaxis=dict(color="#8899BB"),
+            title_font=dict(color="#F0F4FF"),
+        )
         st.plotly_chart(fig_hist, use_container_width=True)
 
         # ── Insight box ───────────────────────────────────────────
@@ -808,8 +1061,15 @@ elif page == "📈 Analyse des erreurs":
             title="[SIMULÉ] Erreur du modèle vs Surface",
             labels={"surface": "Surface (m²)", "erreur": "Erreur (€/m²)"},
         )
-        fig_sim.add_hline(y=0, line_dash="dash", line_color="#6b7280")
-        fig_sim.update_layout(plot_bgcolor="white")
+        fig_sim.add_hline(y=0, line_dash="dash", line_color="#8899BB")
+        fig_sim.update_layout(
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            xaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            title_font=dict(color="#F0F4FF"),
+        )
         st.plotly_chart(fig_sim, use_container_width=True)
 
         st.info(
@@ -824,8 +1084,14 @@ elif page == "📈 Analyse des erreurs":
 # PAGE 4 — Explorer DVF
 # ════════════════════════════════════════════════════════════════════
 elif page == "🗺️ Explorer DVF":
-    st.markdown("## 🗺️ Explorer les données DVF 2023")
-    st.caption("29 412 transactions immobilières Paris — Demandes de Valeurs Foncières")
+    st.markdown(
+        '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
+        '◆ FAIRSQUARE · DONNÉES BRUTES</span>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">🗺️ Explorer les données DVF</h2>'
+        '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
+        '67 292 transactions immobilières Paris 2023–2025 · Demandes de Valeurs Foncières</p>',
+        unsafe_allow_html=True,
+    )
 
     df = load_dvf()
 
@@ -867,7 +1133,14 @@ elif page == "🗺️ Explorer DVF":
             labels={"prix_m2": "Prix/m² (€)", "count": "Nb transactions"},
             color_discrete_sequence=["#6366f1"],
         )
-        fig_dist.update_layout(plot_bgcolor="white", yaxis=dict(gridcolor="#f3f4f6"))
+        fig_dist.update_layout(
+            paper_bgcolor="#0A0E1A",
+            plot_bgcolor="#131929",
+            font=dict(color="#C4D0E8"),
+            yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+            xaxis=dict(color="#8899BB"),
+            title_font=dict(color="#F0F4FF"),
+        )
         st.plotly_chart(fig_dist, use_container_width=True)
 
     with col2:
@@ -885,7 +1158,14 @@ elif page == "🗺️ Explorer DVF":
                 labels={"arr": "Arrondissement", "prix_m2": "Prix/m² (€)"},
                 color_discrete_sequence=["#6366f1"],
             )
-            fig_arr.update_layout(plot_bgcolor="white", yaxis=dict(gridcolor="#f3f4f6"))
+            fig_arr.update_layout(
+                paper_bgcolor="#0A0E1A",
+                plot_bgcolor="#131929",
+                font=dict(color="#C4D0E8"),
+                yaxis=dict(gridcolor="#1E2D45", color="#8899BB"),
+                xaxis=dict(color="#8899BB"),
+                title_font=dict(color="#F0F4FF"),
+            )
             st.plotly_chart(fig_arr, use_container_width=True)
 
     # Map of transactions
@@ -898,3 +1178,16 @@ elif page == "🗺️ Explorer DVF":
 
     with st.expander("Voir un extrait des données"):
         st.dataframe(df_f.head(100), use_container_width=True)
+
+
+# ── Footer ────────────────────────────────────────────────────────────
+st.markdown(
+    '<div style="margin-top:40px;padding:20px 0 10px 0;border-top:1px solid #1E2D45;'
+    'text-align:center;color:#4A5568;font-size:0.78em;letter-spacing:0.3px">'
+    '© 2025 <span style="color:#00D4AA;font-weight:700">FairSquare</span> · '
+    'Données DVF Gouvernement français · '
+    'Modèle LightGBM v3 · '
+    'Paris · Île-de-France'
+    '</div>',
+    unsafe_allow_html=True,
+)
