@@ -27,6 +27,21 @@ router = APIRouter(tags=["predictions"])
 
 ARTIFACT_PATH = ROOT / "models" / "artifacts" / "best_model.pkl"
 
+# ── OSM feature columns (available in dvf_paris_osm_enriched.parquet) ─
+_OSM_COLS = ["nb_restaurants", "nb_transport", "nb_parks", "walkability_score", "dist_metro_m"]
+
+# Paris-wide medians used as defaults when parquet join misses a cell
+_OSM_DEFAULTS = {
+    "nb_restaurants":  80.0,
+    "nb_transport":    26.0,
+    "nb_parks":         5.0,
+    "walkability_score": 37.0,
+    "dist_metro_m":   204.0,
+}
+
+# V4 feature set extends V2 with OSM features (used when a v4 model is available)
+FEATURE_COLS_V4 = FEATURE_COLS_V2 + _OSM_COLS
+
 # ── Confidence interval width (€/m²) — approximate from training residuals
 _CI_HALF_WIDTH = 1500.0
 
@@ -63,27 +78,21 @@ def _build_input_df(req: PredictionRequest) -> pd.DataFrame:
         "lot5_surface_carrez":       np.nan,
     }])
 
-    # OSM enrichment (best-effort, fallback à zéro si indisponible)
-    _OSM_COLS = ["nb_restaurants", "nb_transport", "nb_parks", "walkability_score", "dist_metro_m"]
+    # OSM enrichment (best-effort, falls back to Paris medians)
+    for col, val in _OSM_DEFAULTS.items():
+        df[col] = val   # pre-fill with medians; overwritten below if parquet available
     try:
         osm_path = ROOT / "data" / "outputs" / "dvf_paris_osm_enriched.parquet"
         if osm_path.exists():
-            osm_df = pd.read_parquet(osm_path, columns=["grid_lat", "grid_lon"] + _OSM_COLS)
+            osm_df = pd.read_parquet(osm_path, columns=["lat_grid", "lon_grid"] + _OSM_COLS)
             grid_lat = round(req.latitude / 0.005) * 0.005
             grid_lon = round(req.longitude / 0.005) * 0.005
-            osm_row = osm_df[(osm_df.grid_lat == grid_lat) & (osm_df.grid_lon == grid_lon)]
+            osm_row = osm_df[(osm_df.lat_grid == grid_lat) & (osm_df.lon_grid == grid_lon)]
             if not osm_row.empty:
                 for col in _OSM_COLS:
-                    df[col] = osm_row[col].values[0]
-            else:
-                for col in _OSM_COLS:
-                    df[col] = 0
-        else:
-            for col in _OSM_COLS:
-                df[col] = 0
+                    df[col] = float(osm_row[col].values[0])
     except Exception:
-        for col in _OSM_COLS:
-            df[col] = 0
+        pass  # defaults already set above
 
     return df
 
@@ -164,7 +173,12 @@ async def predict(req: PredictionRequest):
     # Build input
     df_in = _build_input_df(req)
     df_in = add_features(df_in, arr_target_enc=arr_enc, global_mean=global_m)
-    X = df_in[FEATURE_COLS_V2].astype(float)
+    # Use v4 feature set (includes OSM) if the artifact was trained with it
+    feat_cols = artifact.get("feature_cols", FEATURE_COLS_V2)
+    if set(_OSM_COLS).issubset(set(feat_cols)):
+        X = df_in[feat_cols].astype(float)
+    else:
+        X = df_in[FEATURE_COLS_V2].astype(float)
 
     # Predict
     preds = np.array([m.predict(X)[0] for m in models_list])
