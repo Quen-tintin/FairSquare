@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["python311", "gcc"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc"]
 
 [phases.install]
-cmds = ["pip install -e '.[dev]' || pip install -r requirements.txt"]
+cmds = ["python3.11 -m pip install -e '.[dev]' || python3.11 -m pip install -r requirements.txt"]
 
 [start]
 cmd = "streamlit run src/frontend/app.py --server.port $PORT --server.address 0.0.0.0"
