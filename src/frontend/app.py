@@ -6,6 +6,8 @@ Run: streamlit run src/frontend/app.py
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -215,6 +217,7 @@ def _compute_shap(surface: float, pieces: int, arrondissement: int,
         top6 = sorted(sv_eur.items(), key=lambda x: abs(x[1]), reverse=True)[:6]
         return {_LABELS.get(k, k): round(v) for k, v in top6}
     except Exception:
+        logging.exception("_compute_shap failed")
         return None
 
 
@@ -267,6 +270,7 @@ def load_top_gem() -> dict:
             "shap":            shap_data,
         }
     except Exception:
+        logging.exception("load_top_gem failed — using static fallback")
         return _fb
 
 
@@ -376,9 +380,9 @@ def fit_error_model() -> pd.DataFrame | None:
     try:
         import lightgbm as lgb
         from sklearn.model_selection import train_test_split
-        from src.ml.features import prepare_features
+        from src.ml.features_v2 import prepare_features_v2
 
-        X, y = prepare_features(df)
+        X, y = prepare_features_v2(df)
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
         )
@@ -398,6 +402,7 @@ def fit_error_model() -> pd.DataFrame | None:
             "erreur_pct":    (y_pred - y_test.values) / y_test.values * 100,
         })
     except Exception as exc:
+        logging.exception("fit_error_model failed")
         st.warning(f"Impossible d'entraîner le modèle : {exc}")
         return None
 
@@ -427,6 +432,13 @@ def price_card(label: str, price: int, price_m2: int,
         f'<div style="color:#8899BB;font-size:0.85em;margin-top:4px">{price_m2:,} €/m²</div>'
         f'</div>'
     )
+
+
+@st.cache_data(show_spinner="Gemini Vision…")
+def _run_vision(url: str) -> dict:
+    """Score a property photo via Gemini Vision. Lazy-imports RenovationScorer."""
+    from src.vision.renovation_scorer import RenovationScorer
+    return RenovationScorer().score_from_url(url).to_dict()
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────
@@ -496,6 +508,18 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+
+# ── Startup artifact checks ──────────────────────────────────────────
+_missing_artifacts: list[str] = []
+if not PROCESSED.exists():
+    _missing_artifacts.append("`data/processed/dvf_paris_2023_2025_clean.parquet` — lancez `python scripts/run_dvf_poc.py`")
+if not _MODEL_PATH.exists():
+    _missing_artifacts.append("`models/artifacts/best_model.pkl` — lancez `python scripts/train_improved_model.py`")
+if _missing_artifacts:
+    st.warning(
+        "**Fichiers manquants — certaines fonctionnalités seront dégradées :**\n\n"
+        + "\n".join(f"- {m}" for m in _missing_artifacts)
+    )
 
 # ════════════════════════════════════════════════════════════════════
 # PAGE 1 — Analyse d'annonce  (THE DEMO)
@@ -570,24 +594,20 @@ if page == "🔍 Analyse d'annonce":
         # Section Vision IA
         st.markdown("#### 🔍 Analyse Visuelle IA (Gemini)")
         _RENO_IMPACT = {1: +200, 2: +100, 3: 0, 4: -200, 5: -500}
-        import os as _os
-        _api_key = _os.getenv("GOOGLE_API_KEY", "") or _os.getenv("GEMINI_API_KEY", "")
+        _api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
         _vision_score    = APT["renovation_score"]
         _vision_reason   = APT["renovation_reasoning"]
         _vision_model    = "—"
         if _api_key:
             try:
                 _img_url = "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=600&q=80"
-                from src.vision.renovation_scorer import RenovationScorer
-                @st.cache_data(show_spinner="Gemini Vision…")
-                def _run_vision(url: str) -> dict:
-                    return RenovationScorer().score_from_url(url).to_dict()
                 _vr = _run_vision(_img_url)
                 _vision_score  = _vr["renovation_score"]
                 _vision_reason = _vr["reasoning"]
                 _vision_model  = _vr.get("model_used", "Gemini")
-            except Exception:
-                pass
+            except Exception as _vision_exc:
+                logging.warning("Vision IA indisponible : %s", _vision_exc)
+                st.caption(f"Vision IA indisponible : {_vision_exc}")
         _impact    = _RENO_IMPACT.get(_vision_score, 0)
         _imp_color = "#00D4AA" if _impact >= 0 else "#EF4444"
         _imp_sign  = "+" if _impact >= 0 else ""
@@ -759,272 +779,301 @@ if page == "🔍 Analyse d'annonce":
 # PAGE 2 — Analyser une URL
 # ════════════════════════════════════════════════════════════════════
 elif page == "🔗 Analyser une URL":
+
+    # ── Session state ─────────────────────────────────────────────
+    for _k, _v in [("url_result", None), ("url_vision", None)]:
+        if _k not in st.session_state:
+            st.session_state[_k] = _v
+
+    # ── Header ────────────────────────────────────────────────────
     st.markdown(
         '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
-        '◆ FAIRSQUARE · ANALYSE URL</span>'
-        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">🔗 Analyser une annonce en ligne</h2>'
+        '◆ FAIRSQUARE · URL ANALYZER</span>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">🔗 Analyser une annonce</h2>'
         '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
-        'Collez une URL SeLoger, LeBonCoin, PAP ou BienIci — FairSquare extrait les données et calcule le score Hidden Gem.</p>',
+        'Colle une URL SeLoger · LeBonCoin · PAP · BienIci — scraping Firecrawl + ML + Gemini Vision en ~15 s.</p>',
         unsafe_allow_html=True,
     )
 
-    url_input = st.text_input(
-        "URL de l'annonce",
-        placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
-        label_visibility="visible",
-    )
-
-    analyse_btn = st.button("Analyser", use_container_width=False)
+    _url_col, _btn_col = st.columns([5, 1])
+    with _url_col:
+        url_input = st.text_input(
+            "url", label_visibility="collapsed",
+            placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
+        )
+    with _btn_col:
+        analyse_btn = st.button("Analyser ›", use_container_width=True, type="primary")
 
     if analyse_btn and url_input.strip():
-        with st.spinner("Scraping + prédiction en cours…"):
+        st.session_state.url_result = None
+        st.session_state.url_vision = None
+
+        # Step 1 — Firecrawl scraping + ML prediction
+        with st.spinner("⏳ Scraping Firecrawl + prédiction LightGBM…"):
             try:
                 from src.frontend.url_analyzer import analyze_listing_url
-                result = analyze_listing_url(url_input.strip())
-            except Exception as exc:
-                result = {
-                    "success": False,
-                    "error": str(exc),
-                    "titre": "", "prix_annonce": 0, "surface": 0,
-                    "pieces": 0, "arrondissement": 0,
-                    "prix_predit_m2": 0, "prix_predit_total": 0,
-                    "gem_score": 0, "gain_potentiel": 0,
-                    "is_hidden_gem": False, "shap_top3": [],
+                st.session_state.url_result = analyze_listing_url(url_input.strip())
+            except Exception as _exc:
+                st.session_state.url_result = {
+                    "success": False, "error": str(_exc),
+                    "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0,
+                    "arrondissement": 0, "prix_predit_m2": 0, "prix_predit_m2_brut": 0,
+                    "prix_predit_total": 0, "gem_score": 0, "gain_potentiel": 0,
+                    "is_hidden_gem": False, "shap_top3": [], "listing_extras": {},
+                    "corrections": {}, "photo_url": None,
                 }
 
-        if not result["success"]:
-            st.error(f"**Scraping échoué** — {result['error']}")
-            st.info(
-                "**Pourquoi ça échoue ?** Les sites immobiliers utilisent du JavaScript dynamique "
-                "et des protections anti-bot. SeLoger, LeBonCoin et BienIci bloquent souvent les "
-                "requêtes automatisées. Utilisez la page **Analyse d'annonce** pour saisir manuellement les données.",
-                icon="💡",
-            )
+        # Step 2 — Gemini Vision on listing photo
+        _r = st.session_state.url_result
+        if _r and _r.get("success") and _r.get("photo_url"):
+            _gkey = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+            if _gkey:
+                with st.spinner("👁️ Gemini Vision — analyse de la photo…"):
+                    try:
+                        from src.vision.renovation_scorer import RenovationScorer
+                        st.session_state.url_vision = RenovationScorer().score_from_url(
+                            _r["photo_url"]
+                        ).to_dict()
+                    except Exception as _ve:
+                        logging.warning("Vision failed: %s", _ve)
+                        st.session_state.url_vision = None
+
+    elif analyse_btn:
+        st.warning("Colle une URL dans le champ ci-dessus.")
+
+    # ══ DISPLAY ══════════════════════════════════════════════════
+    _res = st.session_state.url_result
+    _vis = st.session_state.url_vision
+
+    if _res is None:
+        st.markdown(
+            '<div style="background:#131929;border:1px dashed #1E2D45;border-radius:16px;'
+            'padding:48px;text-align:center;color:#4A5568;font-size:0.92em;margin-top:16px">'
+            '🏠 &nbsp; Colle une URL et clique sur <b>Analyser ›</b></div>',
+            unsafe_allow_html=True,
+        )
+
+    elif not _res["success"]:
+        st.error(f"**Scraping échoué** — {_res['error']}")
+        st.info("Essaie une autre URL ou utilise la page **Analyse d'annonce** pour saisir manuellement.", icon="💡")
+
+    else:
+        # ── Verdict badge ──────────────────────────────────────────
+        _gsc  = _res["gem_score"] * 100
+        _arr  = _res["arrondissement"]
+        _sarr = f'{_arr}{"er" if _arr == 1 else "e"}'
+        if _res["is_hidden_gem"]:
+            _badge_bg    = "linear-gradient(135deg,#00D4AA,#0095FF)"
+            _badge_color = "#0A0E1A"
+            _badge_text  = f"🔥 HIDDEN GEM · {_gsc:.1f}% SOUS MARCHÉ"
+        elif _res["gem_score"] < -0.02:
+            _badge_bg    = "linear-gradient(135deg,#ef4444,#dc2626)"
+            _badge_color = "#fff"
+            _badge_text  = f"⚠️ SURCOTÉ · +{abs(_gsc):.1f}% AU-DESSUS DU MARCHÉ"
         else:
-            # ── Badge ──────────────────────────────────────────────
-            gem_score_pct = result["gem_score"] * 100
-            if result["is_hidden_gem"]:
-                badge_html = (
-                    '<span style="background:linear-gradient(135deg,#00D4AA,#0095FF);'
-                    'color:#0A0E1A;border-radius:20px;padding:6px 20px;font-weight:800;'
-                    f'font-size:1.1em;letter-spacing:1px">🔥 HIDDEN GEM · -{gem_score_pct:.1f}% sous marché</span>'
-                )
-            elif result["gem_score"] < 0:
-                badge_html = (
-                    '<span style="background:#ef444422;border:1px solid #ef4444;'
-                    'color:#ef4444;border-radius:20px;padding:6px 20px;font-weight:800;'
-                    f'font-size:1.1em">⚠️ SURCOTÉ · +{abs(gem_score_pct):.1f}% au-dessus marché</span>'
-                )
+            _badge_bg    = "#1E2D45"
+            _badge_color = "#8899BB"
+            _badge_text  = f"~ PRIX CORRECT · {_gsc:.1f}% sous marché"
+
+        st.markdown(
+            f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:16px;'
+            f'padding:18px 24px;margin-bottom:20px">'
+            f'<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">'
+            f'<div>'
+            f'<div style="color:#F0F4FF;font-weight:700;font-size:1.05em">'
+            f'{(_res["titre"] or "Annonce")[:72]}</div>'
+            f'<div style="color:#8899BB;font-size:0.82em;margin-top:3px">'
+            f'📍 Paris {_sarr} &nbsp;·&nbsp; {_res["surface"]:.0f} m² &nbsp;·&nbsp; '
+            f'{_res["pieces"]} pièce{"s" if _res["pieces"] > 1 else ""} '
+            f'&nbsp;·&nbsp; <span style="color:#6B7280">{_res.get("source","")}</span></div>'
+            f'</div>'
+            f'<span style="background:{_badge_bg};color:{_badge_color};border-radius:20px;'
+            f'padding:6px 18px;font-weight:800;font-size:0.9em;letter-spacing:0.5px;white-space:nowrap">'
+            f'{_badge_text}</span>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── 3 price cards ──────────────────────────────────────────
+        _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+        _pc1.metric("Prix affiché",      f"{_res['prix_annonce']:,} €",
+                    f"{_res.get('prix_affiche_m2',0):,} €/m²")
+        _pc2.metric("Estimation FairSquare", f"{_res['prix_predit_total']:,} €",
+                    f"{int(_res['prix_predit_m2']):,} €/m²")
+        _gain = _res['prix_predit_total'] - _res['prix_annonce']
+        _pc3.metric("Écart",
+                    f"{'+' if _gain>0 else ''}{_gain:,} €",
+                    f"{_gsc:+.1f}% gem score",
+                    delta_color="normal" if _gain >= 0 else "inverse")
+        # Vision score pill
+        if _vis:
+            _vs = _vis["renovation_score"]
+            _vlabels = {1:"Excellent",2:"Bon état",3:"Moyen",4:"Travaux",5:"Inhabitable"}
+            _pc4.metric("Vision Gemini", f"Score {_vs}/5", _vlabels.get(_vs,""))
+        else:
+            _pc4.metric("Surface/pièce",
+                        f"{_res['surface']/_res['pieces']:.0f} m²/p" if _res['pieces'] else "—")
+
+        st.divider()
+
+        # ── Main content : photo | analysis ───────────────────────
+        _col_photo, _col_analysis = st.columns([5, 6], gap="large")
+
+        with _col_photo:
+            if _res.get("photo_url"):
+                st.image(_res["photo_url"], use_container_width=True)
             else:
-                badge_html = (
-                    '<span style="background:#131929;border:1px solid #1E2D45;'
-                    'color:#8899BB;border-radius:20px;padding:6px 20px;font-weight:700;'
-                    f'font-size:1em">~ Prix correct · {gem_score_pct:.1f}% sous marché</span>'
-                )
-
-            st.markdown(
-                f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:16px;'
-                f'padding:20px 24px;margin-bottom:18px;text-align:center">'
-                f'<div style="color:#8899BB;font-size:0.78em;text-transform:uppercase;'
-                f'letter-spacing:1px;margin-bottom:10px">{result.get("source","")}</div>'
-                f'<div style="color:#F0F4FF;font-weight:700;font-size:1.05em;margin-bottom:14px">'
-                f'{result["titre"][:80] if result["titre"] else "Annonce"}</div>'
-                f'{badge_html}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            # ── Métriques ─────────────────────────────────────────
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Prix affiché", f"{result['prix_annonce']:,} €",
-                      f"{result.get('prix_affiche_m2', 0):,} €/m²")
-            m2.metric("Prix prédit FairSquare", f"{result['prix_predit_total']:,} €",
-                      f"{int(result['prix_predit_m2']):,} €/m²",
-                      delta_color="normal")
-            gem_delta = f"+{result['gain_potentiel']:,} €" if result["gain_potentiel"] > 0 else f"{result['prix_predit_total'] - result['prix_annonce']:,} €"
-            m3.metric("Gain potentiel", gem_delta)
-            m4.metric("Gem score", f"{gem_score_pct:.1f}%")
-
-            # ── Détails extraits de l'annonce ─────────────────────
-            _extras = result.get("listing_extras", {})
-            _corr   = result.get("corrections", {})
-            _brut   = result.get("prix_predit_m2_brut", result["prix_predit_m2"])
-            _final  = int(result["prix_predit_m2"])
-            _has_extras = bool(_extras.get("features_found")) or _corr.get("total_corr", 1.0) != 1.0
-
-            with st.expander("📋 Détails extraits de l'annonce", expanded=_has_extras):
-                if not _has_extras:
-                    st.caption("Aucune caractéristique supplémentaire détectée (corrections = neutres).")
-                else:
-                    _c1, _c2 = st.columns(2)
-                    with _c1:
-                        st.markdown("**Éléments détectés**")
-                        _etage = _extras.get("etage")
-                        _dpe   = _extras.get("dpe_classe")
-                        _reno  = _extras.get("renovation_score", 0.0)
-                        _charges = _extras.get("charges_mensuelles")
-                        _nb_etages = _extras.get("nb_etages")
-
-                        etage_label = "non détecté"
-                        if _etage is not None:
-                            if _etage == 0:
-                                etage_label = "RDC"
-                            elif _etage >= 6:
-                                etage_label = "Dernier étage"
-                            else:
-                                suffix = "er" if _etage == 1 else "e"
-                                etage_label = f"{_etage}{suffix} étage"
-                                if _nb_etages:
-                                    etage_label += f" / {_nb_etages}"
-
-                        st.markdown(
-                            f'<div style="background:#131929;border:1px solid #1E2D45;'
-                            f'border-radius:10px;padding:14px 18px;line-height:2.2">'
-                            f'<span style="color:#8899BB">Étage</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">{etage_label}</span><br>'
-                            f'<span style="color:#8899BB">DPE</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">{_dpe if _dpe else "non détecté"}</span><br>'
-                            f'<span style="color:#8899BB">Score rénovation</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">{_reno*100:.0f}%</span><br>'
-                            f'<span style="color:#8899BB">Charges</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">'
-                            f'{"non détectées" if _charges is None else f"{_charges:,} €/mois"}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        _kws = _extras.get("features_found", [])
-                        if _kws:
-                            st.caption("Mots-clés : " + " · ".join(_kws))
-
-                    with _c2:
-                        st.markdown("**Corrections appliquées**")
-                        _fc = _corr.get("floor_corr", 1.0)
-                        _dc = _corr.get("dpe_corr", 1.0)
-                        _rc = _corr.get("reno_corr", 1.0)
-                        _tc = _corr.get("total_corr", 1.0)
-
-                        def _pct(v: float) -> str:
-                            diff = (v - 1.0) * 100
-                            if abs(diff) < 0.05:
-                                return "neutre"
-                            sign = "+" if diff > 0 else ""
-                            return f"{sign}{diff:.1f}%"
-
-                        st.markdown(
-                            f'<div style="background:#131929;border:1px solid #1E2D45;'
-                            f'border-radius:10px;padding:14px 18px;line-height:2.2">'
-                            f'<span style="color:#8899BB">Étage</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">×{_fc:.3f} ({_pct(_fc)})</span><br>'
-                            f'<span style="color:#8899BB">DPE</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">×{_dc:.3f} ({_pct(_dc)})</span><br>'
-                            f'<span style="color:#8899BB">Rénovation</span> &nbsp; '
-                            f'<span style="color:#F0F4FF;font-weight:700">×{_rc:.3f} ({_pct(_rc)})</span><br>'
-                            f'<span style="color:#8899BB">Total</span> &nbsp; '
-                            f'<span style="color:#00D4AA;font-weight:700">×{_tc:.3f} ({_pct(_tc)})</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            f'<div style="background:#0A0E1A;border:1px solid #1E2D45;'
-                            f'border-radius:8px;padding:10px 14px;margin-top:10px;font-size:0.88em">'
-                            f'<span style="color:#8899BB">Prix modèle brut</span> &nbsp; '
-                            f'<span style="color:#C4D0E8;font-weight:600">{int(_brut):,} €/m²</span><br>'
-                            f'<span style="color:#8899BB">→ après corrections</span> &nbsp; '
-                            f'<span style="color:#00D4AA;font-weight:700">{_final:,} €/m²</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-            st.divider()
-
-            # ── Photo + Détails + SHAP ─────────────────────────────
-            col_photo, col_result = st.columns([1, 1])
-
-            with col_photo:
-                if result.get("photo_url"):
-                    st.image(result["photo_url"], caption="Photo principale", use_container_width=True)
-                else:
-                    st.info("Photo non disponible")
-
-            with col_result:
-                st.markdown("#### Caractéristiques")
                 st.markdown(
-                    f'<div style="background:#131929;border:1px solid #1E2D45;'
-                    f'border-radius:12px;padding:18px 20px;line-height:2">'
-                    f'<span style="color:#8899BB">Surface</span> &nbsp; '
-                    f'<span style="color:#F0F4FF;font-weight:700">{result["surface"]:.0f} m²</span><br>'
-                    f'<span style="color:#8899BB">Pièces</span> &nbsp; '
-                    f'<span style="color:#F0F4FF;font-weight:700">{result["pieces"]}</span><br>'
-                    f'<span style="color:#8899BB">Arrondissement</span> &nbsp; '
-                    f'<span style="color:#F0F4FF;font-weight:700">Paris {result["arrondissement"]}{"er" if result["arrondissement"] == 1 else "e"}</span><br>'
-                    f'<span style="color:#8899BB">Prix affiché/m²</span> &nbsp; '
-                    f'<span style="color:#F0F4FF;font-weight:700">{result.get("prix_affiche_m2", 0):,} €/m²</span><br>'
-                    f'<span style="color:#8899BB">Prix prédit/m²</span> &nbsp; '
-                    f'<span style="color:#00D4AA;font-weight:700">{int(result["prix_predit_m2"]):,} €/m²</span>'
-                    f'</div>',
+                    '<div style="background:#131929;border:1px dashed #1E2D45;border-radius:12px;'
+                    'height:260px;display:flex;align-items:center;justify-content:center;'
+                    'color:#4A5568;font-size:0.9em">Photo non disponible</div>',
                     unsafe_allow_html=True,
                 )
 
-                if result["shap_top3"]:
-                    st.markdown("#### Facteurs clés (SHAP)")
-                    for s in result["shap_top3"]:
-                        impact  = s["impact"]
-                        color   = "#00D4AA" if impact > 0 else "#ef4444"
-                        sign    = "+" if impact > 0 else ""
-                        bar_pct = min(100, int(abs(impact) / max(abs(s2["impact"]) for s2 in result["shap_top3"]) * 100))
-                        st.markdown(
-                            f'<div style="background:#131929;border:1px solid #1E2D45;'
-                            f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
-                            f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
-                            f'<span style="color:#C4D0E8;font-size:0.9em">{s["feature"]}</span>'
-                            f'<span style="color:{color};font-weight:700">{sign}{impact:,} €/m²</span>'
-                            f'</div>'
-                            f'<div style="background:#0A0E1A;border-radius:4px;height:4px">'
-                            f'<div style="background:{color};width:{bar_pct}%;height:4px;border-radius:4px"></div>'
-                            f'</div></div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.markdown("#### Comparaison prix")
-                    fig_cmp = {
-                        "Affiché":  result["prix_annonce"],
-                        "FairSquare": result["prix_predit_total"],
-                    }
-                    import plotly.graph_objects as _go
-                    fig = _go.Figure(_go.Bar(
-                        x=list(fig_cmp.keys()),
-                        y=list(fig_cmp.values()),
-                        marker_color=["#4A5568", "#00D4AA"],
-                    ))
-                    fig.update_layout(
-                        paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
-                        font=dict(color="#C4D0E8"),
-                        yaxis=dict(gridcolor="#1E2D45", tickformat=","),
-                        showlegend=False, height=260,
+            # ── Vision card (below photo) ──────────────────────────
+            if _vis:
+                _vs       = _vis["renovation_score"]
+                _vcat     = _vis.get("space_category", "Standard")
+                _vreason  = _vis.get("reasoning", "")
+                _vmodel   = _vis.get("model_used", "Gemini")
+                _vcolors  = {1:"#22c55e",2:"#84cc16",3:"#f59e0b",4:"#ef4444",5:"#7f1d1d"}
+                _vlabels2 = {1:"Excellent état",2:"Bon état",3:"État moyen",4:"Travaux importants",5:"Inhabitable"}
+                _vc = _vcolors.get(_vs, "#6b7280")
+                _vstars_on  = "★" * (6 - _vs)
+                _vstars_off = "☆" * (_vs - 1)
+                _cat_color  = {"Étroit":"#f59e0b","Standard":"#00D4AA","Spacieux":"#0095FF"}.get(_vcat,"#8899BB")
+
+                st.markdown(
+                    f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:12px;'
+                    f'padding:16px 18px;margin-top:12px">'
+                    f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+                    f'<span style="color:#8899BB;font-size:0.72em;text-transform:uppercase;letter-spacing:1px">'
+                    f'👁️ Gemini Vision · {_vmodel}</span>'
+                    f'<span style="background:{_cat_color}22;border:1px solid {_cat_color}55;'
+                    f'color:{_cat_color};border-radius:12px;padding:2px 10px;font-size:0.78em;font-weight:700">'
+                    f'{_vcat}</span>'
+                    f'</div>'
+                    f'<div style="margin-bottom:6px">'
+                    f'<span style="font-size:1.5em;color:{_vc}">{_vstars_on}{_vstars_off}</span>'
+                    f' <span style="color:{_vc};font-weight:700;font-size:0.95em">{_vlabels2.get(_vs,"")}</span>'
+                    f'</div>'
+                    f'<div style="color:#C4D0E8;font-size:0.84em;line-height:1.5;border-left:2px solid {_vc};'
+                    f'padding-left:10px;margin-top:6px">{_vreason}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            elif _res.get("photo_url"):
+                _gkey2 = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+                if not _gkey2:
+                    st.caption("Vision désactivée — ajoute GOOGLE_API_KEY dans .env")
+
+        with _col_analysis:
+            # ── Price comparison chart ─────────────────────────────
+            _fig = go.Figure()
+            _fig.add_trace(go.Bar(
+                x=["Prix affiché", "Estimation FairSquare"],
+                y=[_res["prix_annonce"], _res["prix_predit_total"]],
+                marker_color=["#4A5568", "#00D4AA"],
+                text=[f"{_res['prix_annonce']:,} €", f"{_res['prix_predit_total']:,} €"],
+                textposition="outside", textfont=dict(color="#F0F4FF", size=13),
+            ))
+            _fig.update_layout(
+                paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
+                font=dict(color="#C4D0E8", size=12),
+                yaxis=dict(gridcolor="#1E2D45", tickformat=",d", color="#8899BB"),
+                xaxis=dict(color="#8899BB"),
+                showlegend=False, height=220, margin=dict(t=20, b=10, l=0, r=0),
+            )
+            st.plotly_chart(_fig, use_container_width=True)
+
+            # ── Property details ───────────────────────────────────
+            _extras = _res.get("listing_extras", {})
+            _corr   = _res.get("corrections", {})
+            _dpe    = _extras.get("dpe_classe")
+            _etage  = _extras.get("etage")
+            _charges= _extras.get("charges_mensuelles")
+            _kws    = _extras.get("features_found", [])
+            _brut   = _res.get("prix_predit_m2_brut", _res["prix_predit_m2"])
+            _tc     = _corr.get("total_corr", 1.0)
+
+            _etage_str = "non détecté"
+            if _etage is not None:
+                _etage_str = "RDC" if _etage == 0 else ("Dernier étage" if _etage >= 6
+                             else f"{_etage}{'er' if _etage==1 else 'e'} étage")
+
+            st.markdown(
+                f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:12px;'
+                f'padding:16px 20px;line-height:2">'
+                f'<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;'
+                f'letter-spacing:1px;margin-bottom:8px">Caractéristiques</div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 20px">'
+                f'<span style="color:#8899BB;font-size:0.88em">Surface</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">{_res["surface"]:.0f} m²</span>'
+                f'<span style="color:#8899BB;font-size:0.88em">Pièces</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">{_res["pieces"]}</span>'
+                f'<span style="color:#8899BB;font-size:0.88em">Arrondissement</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">Paris {_sarr}</span>'
+                f'<span style="color:#8899BB;font-size:0.88em">DPE</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">{_dpe if _dpe else "—"}</span>'
+                f'<span style="color:#8899BB;font-size:0.88em">Étage</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">{_etage_str}</span>'
+                f'<span style="color:#8899BB;font-size:0.88em">Charges</span>'
+                f'<span style="color:#F0F4FF;font-weight:700">'
+                f'{"—" if _charges is None else f"{_charges:,} €/mois"}</span>'
+                f'</div>'
+                + (
+                    f'<div style="margin-top:12px;border-top:1px solid #1E2D45;padding-top:10px">'
+                    f'<span style="color:#8899BB;font-size:0.78em">Prix brut LightGBM</span>'
+                    f' <span style="color:#C4D0E8;font-weight:600">{int(_brut):,} €/m²</span>'
+                    + (
+                        f' → <span style="color:#00D4AA;font-weight:700">{int(_res["prix_predit_m2"]):,} €/m²</span>'
+                        f' <span style="color:#6B7280;font-size:0.8em">(×{_tc:.3f} corrections)</span>'
+                        if abs(_tc - 1.0) > 0.001 else ""
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    + f'</div>'
+                )
+                + f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    elif not url_input.strip() and analyse_btn:
-        st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
+            # ── Keywords ──────────────────────────────────────────
+            if _kws:
+                st.markdown(
+                    '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">'
+                    + "".join(
+                        f'<span style="background:#131929;border:1px solid #1E2D45;'
+                        f'color:#8899BB;border-radius:20px;padding:3px 10px;font-size:0.78em">{k}</span>'
+                        for k in _kws[:10]
+                    )
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
 
-    # ── Aide ──────────────────────────────────────────────────────
-    with st.expander("Sources supportées & limitations"):
-        st.markdown("""
-**Sources supportées**
-- **SeLoger** : extraction JSON-LD + meta tags
-- **LeBonCoin** : extraction `__NEXT_DATA__`
-- **PAP** : extraction JSON-LD + HTML
-- **BienIci** : extraction `__NEXT_DATA__` + meta tags
-
-**Limitations**
-Les sites immobiliers bloquent souvent les requêtes automatisées (anti-bot, JavaScript dynamique).
-Si le scraping échoue, utilisez la page **Analyse d'annonce** pour saisir manuellement prix, surface et arrondissement.
-
-**Calcul du Gem Score**
-`gem_score = (prix_prédit/m² − prix_affiché/m²) / prix_prédit/m²`
-- `> 8%` → Hidden Gem (sous-évalué)
-- `< 0%` → Surcoté (au-dessus du marché)
-""")
+            # ── SHAP top-3 ────────────────────────────────────────
+            if _res.get("shap_top3"):
+                st.markdown(
+                    '<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;'
+                    'letter-spacing:1px;margin-top:16px;margin-bottom:8px">Facteurs SHAP</div>',
+                    unsafe_allow_html=True,
+                )
+                _max_imp = max(abs(s["impact"]) for s in _res["shap_top3"]) or 1
+                for _s in _res["shap_top3"]:
+                    _imp = _s["impact"]
+                    _sc  = "#00D4AA" if _imp > 0 else "#ef4444"
+                    _bar = min(100, int(abs(_imp) / _max_imp * 100))
+                    st.markdown(
+                        f'<div style="background:#131929;border:1px solid #1E2D45;'
+                        f'border-radius:8px;padding:10px 14px;margin-bottom:6px">'
+                        f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+                        f'<span style="color:#C4D0E8;font-size:0.88em">{_s["feature"]}</span>'
+                        f'<span style="color:{_sc};font-weight:700;font-size:0.9em">'
+                        f'{("+" if _imp>0 else "")}{_imp:,} €/m²</span>'
+                        f'</div>'
+                        f'<div style="background:#0A0E1A;border-radius:3px;height:3px">'
+                        f'<div style="background:{_sc};width:{_bar}%;height:3px;border-radius:3px"></div>'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1559,7 +1608,7 @@ elif page == "🗺️ Explorer DVF":
 
     if df is None:
         st.error(
-            "Fichier `data/processed/dvf_paris_2023_clean.parquet` non trouvé. "
+            "Fichier `data/processed/dvf_paris_2023_2025_clean.parquet` non trouvé. "
             "Lancez `python scripts/run_dvf_poc.py` pour générer les données."
         )
         st.stop()
