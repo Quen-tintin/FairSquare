@@ -18,6 +18,13 @@ import numpy as np
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
+
+try:
+    import cloudscraper as _cloudscraper
+    _HAS_CLOUDSCRAPER = True
+except ImportError:
+    _HAS_CLOUDSCRAPER = False
 
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -76,13 +83,18 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/122.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Cache-Control": "max-age=0",
 }
 
 
@@ -123,14 +135,81 @@ def _arr_from_postal(cp: Any) -> int:
         return 0
 
 
-def _fetch_html(url: str, timeout: int = 15) -> tuple[str, BeautifulSoup]:
-    """Fetch URL and return (raw_text, soup). Forces UTF-8 decoding."""
+def _fetch_html(url: str, timeout: int = 20) -> tuple[str, BeautifulSoup]:
+    """
+    Fetch URL with anti-bot strategy:
+      Strategy A (priority): cloudscraper — handles Cloudflare JS challenges
+      Strategy B (fallback): requests with full browser headers
+    Returns (raw_text, soup).
+    """
+    # Strategy A — cloudscraper bypasses Cloudflare
+    if _HAS_CLOUDSCRAPER:
+        try:
+            scraper = _cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "mobile": False}
+            )
+            resp = scraper.get(url, timeout=timeout)
+            resp.raise_for_status()
+            text = resp.content.decode("utf-8", errors="replace")
+            soup = BeautifulSoup(resp.content, "lxml")
+            return text, soup
+        except Exception:
+            pass  # fall through to Strategy B
+
+    # Strategy B — requests with realistic browser headers
     resp = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
     resp.raise_for_status()
-    # Always decode as UTF-8 (SeLoger, LBC are UTF-8 despite headers sometimes lying)
     text = resp.content.decode("utf-8", errors="replace")
-    soup = BeautifulSoup(resp.content, "html.parser", from_encoding="utf-8")
+    soup = BeautifulSoup(resp.content, "lxml")
     return text, soup
+
+
+# ────────────────────────────────────────────────────────────────────
+# Photo extractor (shared by all scrapers)
+# ────────────────────────────────────────────────────────────────────
+
+def _extract_photo_url(soup: BeautifulSoup) -> str | None:
+    """
+    Extract the first listing photo URL, in priority order:
+      1. og:image meta tag  — direct CDN URL, always the hero photo
+      2. JSON-LD image[]    — structured data, very reliable
+      3. First <img> with a CDN-looking src
+    Returns None if nothing found.
+    """
+    # 1. og:image — best option
+    og = soup.find("meta", {"property": "og:image"})
+    if og:
+        src = og.get("content", "").strip()
+        if src.startswith("http"):
+            return src
+
+    # 2. JSON-LD image field
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            if not isinstance(data, dict):
+                continue
+            imgs = data.get("image", [])
+            if isinstance(imgs, str) and imgs.startswith("http"):
+                return imgs
+            if isinstance(imgs, list) and imgs:
+                first = imgs[0]
+                candidate = first if isinstance(first, str) else (first.get("url") or first.get("contentUrl") or "")
+                if candidate.startswith("http"):
+                    return candidate
+        except Exception:
+            pass
+
+    # 3. First <img> with a CDN/photo URL
+    CDN_HINTS = ("photo", "cdn", "seloger", "leboncoin", "img", "annonce", "media")
+    for img in soup.find_all("img", src=True):
+        src = img.get("src", "")
+        if src.startswith("http") and any(h in src.lower() for h in CDN_HINTS):
+            return src
+
+    return None
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -282,6 +361,10 @@ def _scrape_seloger(url: str) -> dict:
             except Exception:
                 pass
 
+    # ── 5. Photo ──────────────────────────────────────────────────
+    if not result.get("photo_url"):
+        result["photo_url"] = _extract_photo_url(soup)
+
     return result
 
 
@@ -339,6 +422,25 @@ def _scrape_leboncoin(url: str) -> dict:
 
     if not result.get("titre"):
         result["titre"] = soup.title.string if soup.title else ""
+
+    # Photo
+    if not result.get("photo_url"):
+        # LeBonCoin: images in __NEXT_DATA__ ad.images[0].urls.large
+        try:
+            if tag and tag.string:
+                nd = json.loads(tag.string)
+                ad = _find_nested(nd, ["props", "pageProps", "ad"]) or {}
+                imgs = ad.get("images", [])
+                if isinstance(imgs, list) and imgs:
+                    url_map = imgs[0].get("urls", {})
+                    candidate = url_map.get("large") or url_map.get("medium") or url_map.get("thumb", "")
+                    if candidate.startswith("http"):
+                        result["photo_url"] = candidate
+        except Exception:
+            pass
+    if not result.get("photo_url"):
+        result["photo_url"] = _extract_photo_url(soup)
+
     return result
 
 
@@ -402,6 +504,10 @@ def _scrape_pap(url: str) -> dict:
             if m:
                 result["arrondissement"] = int(m.group(1))
 
+    # Photo
+    if not result.get("photo_url"):
+        result["photo_url"] = _extract_photo_url(soup)
+
     return result
 
 
@@ -455,6 +561,10 @@ def _scrape_bienici(url: str) -> dict:
         m = re.search(r"(\d+)\s*pi[eè]ces?", text, re.IGNORECASE)
         if m:
             result["pieces"] = _to_int(m.group(1))
+
+    # Photo
+    if not result.get("photo_url"):
+        result["photo_url"] = _extract_photo_url(soup)
 
     return result
 
@@ -621,19 +731,25 @@ def _predict_and_explain(
     if art is None:
         raise FileNotFoundError(f"Modèle introuvable : {MODEL_PATH}")
 
+    _global_mean = art.get("global_mean", 10015.0)
+    _arr_recent  = art.get("arr_recent_median_lookup", {})
+    _recent_val  = float(_arr_recent.get(arrondissement, _global_mean))
+
+    now = datetime.now()
     row = {
         "surface_reelle_bati":       surface,
         "nombre_pieces_principales": pieces,
         "code_postal":               75000 + arrondissement,
         "latitude":                  latitude,
         "longitude":                 longitude,
-        "mois":      6,
-        "trimestre": 2,
-        "annee":     2025,
+        "mois":      now.month,
+        "trimestre": (now.month - 1) // 3 + 1,
+        "annee":     now.year,
         "nombre_lots": 1,
         "lot1_surface_carrez": surface,
         "prix_m2": 0.0,
         "adresse_code_voie": None,
+        "voie_recent_prix_m2": _recent_val,
     }
     df_row = pd.DataFrame([row])
     feat_cols = art.get("feature_cols", FEATURE_COLS_V2)
@@ -750,7 +866,7 @@ def analyze_listing_url(url: str) -> dict:
             "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
             "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {},
+            "listing_extras": {}, "corrections": {}, "photo_url": None,
         }
     except Exception as exc:
         return {
@@ -758,7 +874,7 @@ def analyze_listing_url(url: str) -> dict:
             "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
             "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {},
+            "listing_extras": {}, "corrections": {}, "photo_url": None,
         }
 
     # ── 2. Validate extracted data ────────────────────────────────
@@ -786,7 +902,7 @@ def analyze_listing_url(url: str) -> dict:
             "pieces": pieces, "arrondissement": arr,
             "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {},
+            "listing_extras": {}, "corrections": {}, "photo_url": raw_data.get("photo_url"),
         }
 
     # ── 3. Lat/lon : use scraped if available, else centroid ──────
@@ -835,7 +951,7 @@ def analyze_listing_url(url: str) -> dict:
             "pieces": pieces, "arrondissement": arr,
             "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {},
+            "listing_extras": {}, "corrections": {}, "photo_url": raw_data.get("photo_url"),
         }
 
     # ── 4b. Apply listing corrections ────────────────────────────
@@ -873,6 +989,7 @@ def analyze_listing_url(url: str) -> dict:
             "reno_corr":  round(reno_corr, 4),
             "total_corr": round(floor_corr * dpe_corr * reno_corr, 4),
         },
+        "photo_url":          raw_data.get("photo_url"),
         "error": None,
     }
 

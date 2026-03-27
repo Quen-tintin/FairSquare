@@ -937,10 +937,16 @@ elif page == "🔗 Analyser une URL":
 
             st.divider()
 
-            # ── Détails + SHAP ────────────────────────────────────
-            col_left, col_right = st.columns(2)
+            # ── Photo + Détails + SHAP ─────────────────────────────
+            col_photo, col_result = st.columns([1, 1])
 
-            with col_left:
+            with col_photo:
+                if result.get("photo_url"):
+                    st.image(result["photo_url"], caption="Photo principale", use_container_width=True)
+                else:
+                    st.info("Photo non disponible")
+
+            with col_result:
                 st.markdown("#### Caractéristiques")
                 st.markdown(
                     f'<div style="background:#131929;border:1px solid #1E2D45;'
@@ -959,7 +965,6 @@ elif page == "🔗 Analyser une URL":
                     unsafe_allow_html=True,
                 )
 
-            with col_right:
                 if result["shap_top3"]:
                     st.markdown("#### Facteurs clés (SHAP)")
                     for s in result["shap_top3"]:
