@@ -1209,13 +1209,13 @@ elif page == "🔗 Analyser une URL":
               #bm-link:hover {{ opacity:0.85; }}
               p {{ color:#8899BB; font-family:sans-serif; font-size:0.82em; margin-top:8px; }}
             </style>
+            <a id="bm-link" href="#">🔖 FairSquare — Analyser</a>
+            <p>⬆ Glissez ce bouton dans votre barre de favoris (ou clic droit → Ajouter aux favoris)</p>
             <script>
               var base = window.parent.location.origin;
               var bm = {json.dumps(_BM_TEMPLATE)}.replace('__URL__', base);
               document.getElementById('bm-link').href = bm;
             </script>
-            <a id="bm-link" href="#">🔖 FairSquare — Analyser</a>
-            <p>⬆ Glissez ce bouton dans votre barre de favoris (ou clic droit → Ajouter aux favoris)</p>
             """,
             height=80,
         )
