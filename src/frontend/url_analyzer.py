@@ -3,11 +3,18 @@ FairSquare URL Analyzer
 ========================
 Scrape une annonce immobilière depuis son URL et retourne une analyse FairSquare.
 
-Supporte : SeLoger, LeBonCoin, PAP, BienIci
+Supporte : SeLoger, LeBonCoin, PAP, BienIci (et tout autre site via fallback LLM)
+
+Couche de fetch :
+  - Firecrawl (priorité) : bypass anti-bot, JS rendering, extraction LLM
+  - cloudscraper (fallback) : si FIRECRAWL_API_KEY absent ou erreur
+  - requests (fallback final)
 """
 from __future__ import annotations
 
 import json
+import logging
+import os
 import pickle
 import re
 import sys
@@ -25,6 +32,27 @@ try:
     _HAS_CLOUDSCRAPER = True
 except ImportError:
     _HAS_CLOUDSCRAPER = False
+
+# Firecrawl client — lazy singleton
+_firecrawl_app: Any = None
+
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "fc-3e90c5b3f59340a7b9756a11680ad0e9")
+
+
+def _get_firecrawl() -> Any:
+    """Return cached FirecrawlApp instance, or None if unavailable."""
+    global _firecrawl_app
+    if _firecrawl_app is not None:
+        return _firecrawl_app
+    if not FIRECRAWL_API_KEY:
+        return None
+    try:
+        from firecrawl import FirecrawlApp
+        _firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
+        return _firecrawl_app
+    except ImportError:
+        logging.warning("firecrawl-py non installé — utilisez `pip install firecrawl-py`")
+        return None
 
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -135,14 +163,13 @@ def _arr_from_postal(cp: Any) -> int:
         return 0
 
 
-def _fetch_html(url: str, timeout: int = 20) -> tuple[str, BeautifulSoup]:
+def _fetch_html_legacy(url: str, timeout: int = 20) -> tuple[str, BeautifulSoup]:
     """
-    Fetch URL with anti-bot strategy:
-      Strategy A (priority): cloudscraper — handles Cloudflare JS challenges
-      Strategy B (fallback): requests with full browser headers
-    Returns (raw_text, soup).
+    Legacy fetch — used as fallback when Firecrawl is unavailable.
+      Strategy A: cloudscraper (handles Cloudflare JS challenges)
+      Strategy B: requests with browser headers
+    Returns (raw_html, soup).
     """
-    # Strategy A — cloudscraper bypasses Cloudflare
     if _HAS_CLOUDSCRAPER:
         try:
             scraper = _cloudscraper.create_scraper(
@@ -151,17 +178,65 @@ def _fetch_html(url: str, timeout: int = 20) -> tuple[str, BeautifulSoup]:
             resp = scraper.get(url, timeout=timeout)
             resp.raise_for_status()
             text = resp.content.decode("utf-8", errors="replace")
-            soup = BeautifulSoup(resp.content, "lxml")
-            return text, soup
+            return text, BeautifulSoup(resp.content, "lxml")
         except Exception:
-            pass  # fall through to Strategy B
+            pass
 
-    # Strategy B — requests with realistic browser headers
     resp = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
     resp.raise_for_status()
     text = resp.content.decode("utf-8", errors="replace")
-    soup = BeautifulSoup(resp.content, "lxml")
-    return text, soup
+    return text, BeautifulSoup(resp.content, "lxml")
+
+
+def _firecrawl_fetch(url: str, timeout: int = 30) -> tuple[str, BeautifulSoup, dict]:
+    """
+    Fetch URL via Firecrawl (primary) or cloudscraper (fallback).
+
+    Firecrawl advantages over raw HTTP:
+      - Bypasses Cloudflare / anti-bot protections automatically
+      - Renders JavaScript (SeLoger, BienIci load data client-side)
+      - Returns structured metadata (og:image, title, description)
+
+    Returns:
+        html_content : str          — rendered HTML (use for JSON-LD / __NEXT_DATA__ parsing)
+        soup         : BeautifulSoup — parsed rendered HTML
+        metadata     : dict         — {title, description, ogImage, ogTitle, ogDescription, ...}
+    """
+    fc = _get_firecrawl()
+    if fc is not None:
+        try:
+            response = fc.scrape(url, formats=["html"])
+            html_content = getattr(response, "html", None) or ""
+            # v4 metadata is a DocumentMetadata object — normalise to plain dict
+            _m = getattr(response, "metadata", None)
+            if _m is not None:
+                metadata: dict = {
+                    "ogTitle":       getattr(_m, "og_title",       "") or "",
+                    "ogImage":       getattr(_m, "og_image",       "") or "",
+                    "ogDescription": getattr(_m, "og_description", "") or "",
+                    "title":         getattr(_m, "title",          "") or "",
+                }
+            else:
+                metadata = {}
+            if html_content:
+                soup = BeautifulSoup(html_content, "lxml")
+                return html_content, soup, metadata
+            logging.warning("Firecrawl returned empty HTML for %s", url)
+        except Exception as exc:
+            logging.warning("Firecrawl fetch failed (%s) — falling back to cloudscraper", exc)
+
+    # Fallback to legacy fetch, build minimal metadata from meta tags
+    raw, soup = _fetch_html_legacy(url, timeout=timeout)
+    og_img   = soup.find("meta", {"property": "og:image"})
+    og_title = soup.find("meta", {"property": "og:title"})
+    og_desc  = soup.find("meta", {"property": "og:description"})
+    metadata = {
+        "ogImage":       (og_img.get("content",   "") if og_img   else ""),
+        "ogTitle":       (og_title.get("content", "") if og_title else ""),
+        "ogDescription": (og_desc.get("content",  "") if og_desc  else ""),
+        "title":         (soup.title.string.strip() if soup.title and soup.title.string else ""),
+    }
+    return raw, soup, metadata
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -217,9 +292,17 @@ def _extract_photo_url(soup: BeautifulSoup) -> str | None:
 # ────────────────────────────────────────────────────────────────────
 
 def _scrape_seloger(url: str) -> dict:
-    raw, soup = _fetch_html(url)
+    raw, soup, metadata = _firecrawl_fetch(url)
 
     result: dict = {"source": "SeLoger", "_raw": raw, "_soup": soup}
+
+    # Quick wins from Firecrawl metadata (no parsing needed)
+    if metadata.get("ogTitle") and not result.get("titre"):
+        result["titre"] = metadata["ogTitle"]
+    elif metadata.get("title") and not result.get("titre"):
+        result["titre"] = metadata["title"]
+    if metadata.get("ogImage") and not result.get("photo_url"):
+        result["photo_url"] = metadata["ogImage"]
 
     # ── 1. JSON-LD ──────────────────────────────────────────────
     for script in soup.find_all("script", type="application/ld+json"):
@@ -272,18 +355,28 @@ def _scrape_seloger(url: str) -> dict:
             except Exception:
                 pass
 
-    # ── 3. Meta tags + title tag (SeLoger varies between server/client render) ─
+    # ── 3. Meta tags + title tag ──────────────────────────────────
+    # Firecrawl may return a JS SPA shell where <meta> tags are absent from the
+    # rendered HTML — fall back to the structured metadata Firecrawl extracted.
     def meta(name: str, prop: str | None = None) -> str:
         tag = (soup.find("meta", {"property": prop}) if prop else None) \
             or soup.find("meta", {"name": name})
-        return tag.get("content", "").strip() if tag else ""
+        if tag:
+            return tag.get("content", "").strip()
+        # Firecrawl metadata fallback (camelCase keys)
+        _fc_map = {
+            "og:title": "ogTitle", "og:image": "ogImage",
+            "og:description": "ogDescription", "description": "ogDescription",
+        }
+        return metadata.get(_fc_map.get(prop or name, ""), "") or ""
 
     og_title  = meta("og:title", "og:title")
     title_tag = soup.title.string.strip() if soup.title and soup.title.string else ""
-    # Decode HTML entities in title (e.g. &#x2F; → /)
     import html as _html
     title_tag = _html.unescape(title_tag)
-    meta_desc = meta("description") or meta("og:description", "og:description") or og_title or title_tag
+    # meta_desc priority: explicit description → og:description → og_title → Firecrawl title → page title
+    meta_desc = (meta("description") or meta("og:description", "og:description")
+                 or og_title or metadata.get("title", "") or title_tag)
 
     if not result.get("titre"):
         result["titre"] = og_title or title_tag
@@ -397,8 +490,11 @@ def _dig_seloger_json(obj: dict, result: dict) -> None:
 # ────────────────────────────────────────────────────────────────────
 
 def _scrape_leboncoin(url: str) -> dict:
-    raw, soup = _fetch_html(url)
+    raw, soup, metadata = _firecrawl_fetch(url)
     result: dict = {"source": "LeBonCoin", "_raw": raw, "_soup": soup}
+
+    if metadata.get("ogImage") and not result.get("photo_url"):
+        result["photo_url"] = metadata["ogImage"]
 
     tag = soup.find("script", id="__NEXT_DATA__")
     if tag and tag.string:
@@ -449,8 +545,13 @@ def _scrape_leboncoin(url: str) -> dict:
 # ────────────────────────────────────────────────────────────────────
 
 def _scrape_pap(url: str) -> dict:
-    raw, soup = _fetch_html(url)
+    raw, soup, metadata = _firecrawl_fetch(url)
     result: dict = {"source": "PAP", "_raw": raw, "_soup": soup}
+
+    if metadata.get("ogTitle") and not result.get("titre"):
+        result["titre"] = metadata["ogTitle"]
+    if metadata.get("ogImage") and not result.get("photo_url"):
+        result["photo_url"] = metadata["ogImage"]
 
     # JSON-LD
     for script in soup.find_all("script", type="application/ld+json"):
@@ -516,8 +617,13 @@ def _scrape_pap(url: str) -> dict:
 # ────────────────────────────────────────────────────────────────────
 
 def _scrape_bienici(url: str) -> dict:
-    raw, soup = _fetch_html(url)
+    raw, soup, metadata = _firecrawl_fetch(url)
     result: dict = {"source": "BienIci", "_raw": raw, "_soup": soup}
+
+    if metadata.get("ogTitle") and not result.get("titre"):
+        result["titre"] = metadata["ogTitle"]
+    if metadata.get("ogImage") and not result.get("photo_url"):
+        result["photo_url"] = metadata["ogImage"]
 
     # __NEXT_DATA__ or window.__NEXT_DATA__
     tag = soup.find("script", id="__NEXT_DATA__")
@@ -775,13 +881,15 @@ def _predict_and_explain(
     X = df_feat[avail_cols].astype(float)
 
     model = art["model"]
+    log_target = art.get("log_target", False)
     if isinstance(model, list):
-        prix_m2 = float(np.mean([m.predict(X)[0] for m in model]))
+        raw_pred = float(np.mean([m.predict(X)[0] for m in model]))
         lgb_model = model[0]
     else:
-        prix_m2 = float(model.predict(X)[0])
+        raw_pred = float(model.predict(X)[0])
         lgb_model = model
 
+    prix_m2 = float(np.expm1(raw_pred)) if log_target else raw_pred
     prix_total = int(prix_m2 * surface)
 
     # SHAP top-3
@@ -806,7 +914,9 @@ def _predict_and_explain(
             "walkability_score":         "Score walkabilité",
             "nb_transport":              "Transports à proximité",
         }
-        sv_items = [(avail_cols[i], float(sv[i])) for i in range(len(avail_cols))]
+        # Convert log-space SHAP values to EUR/m² by scaling by predicted price
+        _scale = prix_m2 if log_target else 1.0
+        sv_items = [(avail_cols[i], float(sv[i]) * _scale) for i in range(len(avail_cols))]
         top3 = sorted(sv_items, key=lambda x: abs(x[1]), reverse=True)[:3]
         shap_top3 = [
             {"feature": _LABELS.get(k, k), "impact": round(v)}
@@ -885,17 +995,64 @@ def analyze_listing_url(url: str) -> dict:
     titre     = raw_data.get("titre", "") or ""
 
     missing = []
-    if prix <= 0:      missing.append("prix")
-    if surface <= 0:   missing.append("surface")
+    if prix <= 0:            missing.append("prix")
+    if surface <= 0:         missing.append("surface")
+    if not (1 <= arr <= 20): missing.append("arrondissement")
+
+    # ── 2b. Firecrawl LLM extraction fallback ─────────────────────
+    if missing:
+        fc = _get_firecrawl()
+        if fc is not None:
+            try:
+                llm_resp = fc.extract(
+                    urls=[url],
+                    prompt=(
+                        "Extrais les données de cette annonce immobilière parisienne : "
+                        "titre, prix total en €, surface en m², nombre de pièces, "
+                        "arrondissement parisien (entier 1-20)."
+                    ),
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "titre":          {"type": "string"},
+                            "prix":           {"type": "number",  "description": "Prix total €"},
+                            "surface":        {"type": "number",  "description": "Surface m²"},
+                            "pieces":         {"type": "integer", "description": "Nombre de pièces"},
+                            "arrondissement": {"type": "integer", "description": "Arrondissement 1-20"},
+                        },
+                    },
+                )
+                # extract() returns a dict or a list[dict] depending on version
+                ext = llm_resp
+                if isinstance(ext, list):
+                    ext = ext[0] if ext else {}
+                if isinstance(ext, dict) and ext:
+                    logging.info("Firecrawl LLM extraction succeeded: %s", ext)
+                    if prix <= 0 and ext.get("prix", 0) > 0:
+                        prix = _to_int(ext["prix"])
+                    if surface <= 0 and ext.get("surface", 0) > 0:
+                        surface = _to_float(ext["surface"])
+                    if not (1 <= arr <= 20) and 1 <= int(ext.get("arrondissement", 0)) <= 20:
+                        arr = int(ext["arrondissement"])
+                    if not titre and ext.get("titre"):
+                        titre = ext["titre"]
+                    if not pieces and ext.get("pieces", 0) > 0:
+                        pieces = int(ext["pieces"])
+            except Exception as _llm_exc:
+                logging.warning("Firecrawl LLM extraction failed: %s", _llm_exc)
+
+    # Re-check after LLM fallback
+    missing = []
+    if prix <= 0:            missing.append("prix")
+    if surface <= 0:         missing.append("surface")
     if not (1 <= arr <= 20): missing.append("arrondissement")
 
     if missing:
         return {
             "success": False,
             "error": (
-                f"Données incomplètes extraites ({raw_data.get('source','?')}) — "
-                f"champs manquants : {', '.join(missing)}. "
-                f"Le site utilise probablement du JavaScript dynamique (anti-scraping).\n"
+                f"Données incomplètes ({raw_data.get('source','?')}) — "
+                f"champs manquants après scraping + LLM : {', '.join(missing)}. "
                 f"Extrait : prix={prix}, surface={surface}m², arr={arr}"
             ),
             "titre": titre, "prix_annonce": prix, "surface": surface,
