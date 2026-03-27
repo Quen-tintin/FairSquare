@@ -179,8 +179,8 @@ def _compute_shap(surface: float, pieces: int, arrondissement: int,
         explainer = _shap.TreeExplainer(model)
         sv = explainer.shap_values(X)[0]   # shape: (n_features,)
 
-        # Convert log-space SHAP → approx €/m²  (φ_i * predicted_m2)
-        sv_eur = {feat_cols[i]: float(sv[i]) * prix_m2 for i in range(len(feat_cols))}
+        # SHAP values are already in €/m² (LightGBM regression, target=prix_m2)
+        sv_eur = {feat_cols[i]: float(sv[i]) for i in range(len(feat_cols))}
 
         _LABELS = {
             "arr_target_enc":            f"Localisation {arrondissement}e arr.",
@@ -459,6 +459,7 @@ with st.sidebar:
         "Navigation",
         options=[
             "🔍 Analyse d'annonce",
+            "🔗 Analyser une URL",
             "💎 Recommandeur Hidden Gems",
             "📊 Performance modèle",
             "📈 Analyse des erreurs",
@@ -749,7 +750,184 @@ if page == "🔍 Analyse d'annonce":
 
 
 # ════════════════════════════════════════════════════════════════════
-# PAGE 2 — Recommandeur Hidden Gems
+# PAGE 2 — Analyser une URL
+# ════════════════════════════════════════════════════════════════════
+elif page == "🔗 Analyser une URL":
+    st.markdown(
+        '<span style="color:#00D4AA;font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px">'
+        '◆ FAIRSQUARE · ANALYSE URL</span>'
+        '<h2 style="color:#F0F4FF;font-weight:800;margin-top:4px">🔗 Analyser une annonce en ligne</h2>'
+        '<p style="color:#8899BB;font-size:0.88em;margin-top:-6px">'
+        'Collez une URL SeLoger, LeBonCoin, PAP ou BienIci — FairSquare extrait les données et calcule le score Hidden Gem.</p>',
+        unsafe_allow_html=True,
+    )
+
+    url_input = st.text_input(
+        "URL de l'annonce",
+        placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
+        label_visibility="visible",
+    )
+
+    analyse_btn = st.button("Analyser", use_container_width=False)
+
+    if analyse_btn and url_input.strip():
+        with st.spinner("Scraping + prédiction en cours…"):
+            try:
+                from src.frontend.url_analyzer import analyze_listing_url
+                result = analyze_listing_url(url_input.strip())
+            except Exception as exc:
+                result = {
+                    "success": False,
+                    "error": str(exc),
+                    "titre": "", "prix_annonce": 0, "surface": 0,
+                    "pieces": 0, "arrondissement": 0,
+                    "prix_predit_m2": 0, "prix_predit_total": 0,
+                    "gem_score": 0, "gain_potentiel": 0,
+                    "is_hidden_gem": False, "shap_top3": [],
+                }
+
+        if not result["success"]:
+            st.error(f"**Scraping échoué** — {result['error']}")
+            st.info(
+                "**Pourquoi ça échoue ?** Les sites immobiliers utilisent du JavaScript dynamique "
+                "et des protections anti-bot. SeLoger, LeBonCoin et BienIci bloquent souvent les "
+                "requêtes automatisées. Utilisez la page **Analyse d'annonce** pour saisir manuellement les données.",
+                icon="💡",
+            )
+        else:
+            # ── Badge ──────────────────────────────────────────────
+            gem_score_pct = result["gem_score"] * 100
+            if result["is_hidden_gem"]:
+                badge_html = (
+                    '<span style="background:linear-gradient(135deg,#00D4AA,#0095FF);'
+                    'color:#0A0E1A;border-radius:20px;padding:6px 20px;font-weight:800;'
+                    f'font-size:1.1em;letter-spacing:1px">🔥 HIDDEN GEM · -{gem_score_pct:.1f}% sous marché</span>'
+                )
+            elif result["gem_score"] < 0:
+                badge_html = (
+                    '<span style="background:#ef444422;border:1px solid #ef4444;'
+                    'color:#ef4444;border-radius:20px;padding:6px 20px;font-weight:800;'
+                    f'font-size:1.1em">⚠️ SURCOTÉ · +{abs(gem_score_pct):.1f}% au-dessus marché</span>'
+                )
+            else:
+                badge_html = (
+                    '<span style="background:#131929;border:1px solid #1E2D45;'
+                    'color:#8899BB;border-radius:20px;padding:6px 20px;font-weight:700;'
+                    f'font-size:1em">~ Prix correct · {gem_score_pct:.1f}% sous marché</span>'
+                )
+
+            st.markdown(
+                f'<div style="background:#131929;border:1px solid #1E2D45;border-radius:16px;'
+                f'padding:20px 24px;margin-bottom:18px;text-align:center">'
+                f'<div style="color:#8899BB;font-size:0.78em;text-transform:uppercase;'
+                f'letter-spacing:1px;margin-bottom:10px">{result.get("source","")}</div>'
+                f'<div style="color:#F0F4FF;font-weight:700;font-size:1.05em;margin-bottom:14px">'
+                f'{result["titre"][:80] if result["titre"] else "Annonce"}</div>'
+                f'{badge_html}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # ── Métriques ─────────────────────────────────────────
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Prix affiché", f"{result['prix_annonce']:,} €",
+                      f"{result.get('prix_affiche_m2', 0):,} €/m²")
+            m2.metric("Prix prédit FairSquare", f"{result['prix_predit_total']:,} €",
+                      f"{int(result['prix_predit_m2']):,} €/m²",
+                      delta_color="normal")
+            gem_delta = f"+{result['gain_potentiel']:,} €" if result["gain_potentiel"] > 0 else f"{result['prix_predit_total'] - result['prix_annonce']:,} €"
+            m3.metric("Gain potentiel", gem_delta)
+            m4.metric("Gem score", f"{gem_score_pct:.1f}%")
+
+            st.divider()
+
+            # ── Détails + SHAP ────────────────────────────────────
+            col_left, col_right = st.columns(2)
+
+            with col_left:
+                st.markdown("#### Caractéristiques")
+                st.markdown(
+                    f'<div style="background:#131929;border:1px solid #1E2D45;'
+                    f'border-radius:12px;padding:18px 20px;line-height:2">'
+                    f'<span style="color:#8899BB">Surface</span> &nbsp; '
+                    f'<span style="color:#F0F4FF;font-weight:700">{result["surface"]:.0f} m²</span><br>'
+                    f'<span style="color:#8899BB">Pièces</span> &nbsp; '
+                    f'<span style="color:#F0F4FF;font-weight:700">{result["pieces"]}</span><br>'
+                    f'<span style="color:#8899BB">Arrondissement</span> &nbsp; '
+                    f'<span style="color:#F0F4FF;font-weight:700">Paris {result["arrondissement"]}{"er" if result["arrondissement"] == 1 else "e"}</span><br>'
+                    f'<span style="color:#8899BB">Prix affiché/m²</span> &nbsp; '
+                    f'<span style="color:#F0F4FF;font-weight:700">{result.get("prix_affiche_m2", 0):,} €/m²</span><br>'
+                    f'<span style="color:#8899BB">Prix prédit/m²</span> &nbsp; '
+                    f'<span style="color:#00D4AA;font-weight:700">{int(result["prix_predit_m2"]):,} €/m²</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with col_right:
+                if result["shap_top3"]:
+                    st.markdown("#### Facteurs clés (SHAP)")
+                    for s in result["shap_top3"]:
+                        impact  = s["impact"]
+                        color   = "#00D4AA" if impact > 0 else "#ef4444"
+                        sign    = "+" if impact > 0 else ""
+                        bar_pct = min(100, int(abs(impact) / max(abs(s2["impact"]) for s2 in result["shap_top3"]) * 100))
+                        st.markdown(
+                            f'<div style="background:#131929;border:1px solid #1E2D45;'
+                            f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
+                            f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+                            f'<span style="color:#C4D0E8;font-size:0.9em">{s["feature"]}</span>'
+                            f'<span style="color:{color};font-weight:700">{sign}{impact:,} €/m²</span>'
+                            f'</div>'
+                            f'<div style="background:#0A0E1A;border-radius:4px;height:4px">'
+                            f'<div style="background:{color};width:{bar_pct}%;height:4px;border-radius:4px"></div>'
+                            f'</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.markdown("#### Comparaison prix")
+                    fig_cmp = {
+                        "Affiché":  result["prix_annonce"],
+                        "FairSquare": result["prix_predit_total"],
+                    }
+                    import plotly.graph_objects as _go
+                    fig = _go.Figure(_go.Bar(
+                        x=list(fig_cmp.keys()),
+                        y=list(fig_cmp.values()),
+                        marker_color=["#4A5568", "#00D4AA"],
+                    ))
+                    fig.update_layout(
+                        paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
+                        font=dict(color="#C4D0E8"),
+                        yaxis=dict(gridcolor="#1E2D45", tickformat=","),
+                        showlegend=False, height=260,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+    elif not url_input.strip() and analyse_btn:
+        st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
+
+    # ── Aide ──────────────────────────────────────────────────────
+    with st.expander("Sources supportées & limitations"):
+        st.markdown("""
+**Sources supportées**
+- **SeLoger** : extraction JSON-LD + meta tags
+- **LeBonCoin** : extraction `__NEXT_DATA__`
+- **PAP** : extraction JSON-LD + HTML
+- **BienIci** : extraction `__NEXT_DATA__` + meta tags
+
+**Limitations**
+Les sites immobiliers bloquent souvent les requêtes automatisées (anti-bot, JavaScript dynamique).
+Si le scraping échoue, utilisez la page **Analyse d'annonce** pour saisir manuellement prix, surface et arrondissement.
+
+**Calcul du Gem Score**
+`gem_score = (prix_prédit/m² − prix_affiché/m²) / prix_prédit/m²`
+- `> 8%` → Hidden Gem (sous-évalué)
+- `< 0%` → Surcoté (au-dessus du marché)
+""")
+
+
+# ════════════════════════════════════════════════════════════════════
+# PAGE 3 — Recommandeur Hidden Gems
 # ════════════════════════════════════════════════════════════════════
 elif page == "💎 Recommandeur Hidden Gems":
     st.markdown(
