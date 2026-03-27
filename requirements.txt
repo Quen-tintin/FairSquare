@@ -38,3 +38,7 @@ streamlit>=1.35
 plotly>=5.22
 folium>=0.16
 streamlit-folium>=0.20
+
+# Scraping
+beautifulsoup4>=4.12.0
+lxml>=5.0
