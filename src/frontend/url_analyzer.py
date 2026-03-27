@@ -776,10 +776,10 @@ def _predict_and_explain(
 
     model = art["model"]
     if isinstance(model, list):
-        prix_m2 = float(np.mean([m.predict(X)[0] for m in model]))
+        prix_m2 = float(np.expm1(np.mean([m.predict(X)[0] for m in model])))
         lgb_model = model[0]
     else:
-        prix_m2 = float(model.predict(X)[0])
+        prix_m2 = float(np.expm1(model.predict(X)[0]))
         lgb_model = model
 
     prix_total = int(prix_m2 * surface)
