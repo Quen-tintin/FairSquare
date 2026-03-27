@@ -26,6 +26,28 @@ from src.ml.features_v2 import add_features, FEATURE_COLS_V2
 
 MODEL_PATH = ROOT / "models" / "artifacts" / "best_model.pkl"
 
+# ── Correction tables ─────────────────────────────────────────────────
+FLOOR_CORRECTIONS: dict[int, float] = {
+    0: 0.93,  # RDC: -7%
+    1: 0.96,  # 1er: -4%
+    2: 0.99,  # 2ème: -1%
+    3: 1.00,  # 3ème: référence
+    4: 1.02,  # 4ème: +2%
+    5: 1.04,  # 5ème+: +4%
+}
+DPE_CORRECTIONS: dict[str, float] = {
+    'A': 1.05, 'B': 1.03, 'C': 1.01, 'D': 1.00,
+    'E': 0.97, 'F': 0.94, 'G': 0.90,
+}
+RENOVATION_KEYWORDS = [
+    "rénov", "refait à neuf", "travaux récents", "parquet",
+    "cave", "gardien", "ascenseur", "digicode",
+]
+QUALITY_KEYWORDS = [
+    "standing", "ancien", "haussmannien", "lumineux",
+    "belle vue", "beaux volumes", "luminosité",
+]
+
 # ── Centroides des arrondissements parisiens (lat, lon) ──────────────
 ARR_CENTROIDS: dict[int, tuple[float, float]] = {
     1:  (48.8603, 2.3477),
@@ -118,7 +140,7 @@ def _fetch_html(url: str, timeout: int = 15) -> tuple[str, BeautifulSoup]:
 def _scrape_seloger(url: str) -> dict:
     raw, soup = _fetch_html(url)
 
-    result: dict = {"source": "SeLoger"}
+    result: dict = {"source": "SeLoger", "_raw": raw, "_soup": soup}
 
     # ── 1. JSON-LD ──────────────────────────────────────────────
     for script in soup.find_all("script", type="application/ld+json"):
@@ -293,7 +315,7 @@ def _dig_seloger_json(obj: dict, result: dict) -> None:
 
 def _scrape_leboncoin(url: str) -> dict:
     raw, soup = _fetch_html(url)
-    result: dict = {"source": "LeBonCoin"}
+    result: dict = {"source": "LeBonCoin", "_raw": raw, "_soup": soup}
 
     tag = soup.find("script", id="__NEXT_DATA__")
     if tag and tag.string:
@@ -326,7 +348,7 @@ def _scrape_leboncoin(url: str) -> dict:
 
 def _scrape_pap(url: str) -> dict:
     raw, soup = _fetch_html(url)
-    result: dict = {"source": "PAP"}
+    result: dict = {"source": "PAP", "_raw": raw, "_soup": soup}
 
     # JSON-LD
     for script in soup.find_all("script", type="application/ld+json"):
@@ -389,7 +411,7 @@ def _scrape_pap(url: str) -> dict:
 
 def _scrape_bienici(url: str) -> dict:
     raw, soup = _fetch_html(url)
-    result: dict = {"source": "BienIci"}
+    result: dict = {"source": "BienIci", "_raw": raw, "_soup": soup}
 
     # __NEXT_DATA__ or window.__NEXT_DATA__
     tag = soup.find("script", id="__NEXT_DATA__")
@@ -444,6 +466,125 @@ def _find_nested(obj: Any, keys: list[str]) -> Any:
             return None
         obj = obj.get(k)
     return obj
+
+
+# ────────────────────────────────────────────────────────────────────
+# Listing feature extractor (floor, DPE, renovation)
+# ────────────────────────────────────────────────────────────────────
+
+def extract_listing_features(html: str, soup: BeautifulSoup) -> dict:
+    """
+    Extract extra qualitative features from a listing page HTML.
+
+    Returns:
+        {
+          etage: int | None,            # 0=RDC, None=unknown
+          nb_etages: int | None,        # total floors in building
+          dpe_classe: str | None,       # A-G
+          renovation_score: float,      # 0-1
+          quality_score: float,         # 0-1
+          charges_mensuelles: int|None, # €/mois
+          features_found: list[str],    # human-readable detected items
+        }
+    """
+    text = soup.get_text(" ", strip=True)
+    text_lower = text.lower()
+    features_found: list[str] = []
+
+    # ── 1. Floor (étage) ──────────────────────────────────────────
+    etage: int | None = None
+    nb_etages: int | None = None
+
+    if re.search(r'\brdc\b|rez[- ]de[- ]chauss', text, re.IGNORECASE):
+        etage = 0
+        features_found.append("RDC")
+
+    # "dernier étage" — treat as 5+ for correction purposes
+    if re.search(r'dernier\s+[eé]tage', text, re.IGNORECASE) and etage is None:
+        # Try to get the actual floor number from patterns like "5e et dernier"
+        m = re.search(r'(\d+)\s*(?:er|[eè]me?)\s+et\s+dernier', text, re.IGNORECASE)
+        if m:
+            etage = int(m.group(1))
+            features_found.append(f"Dernier étage ({etage}e)")
+        else:
+            etage = 6  # dernier étage → at least +4% bucket
+            features_found.append("Dernier étage")
+
+    # "Xème étage sur Y" or "Xème étage"
+    if etage is None:
+        m = re.search(
+            r'(\d+)\s*(?:er|[eè]me?)\s*[eé]tage(?:\s+sur\s+(\d+))?',
+            text, re.IGNORECASE,
+        )
+        if m:
+            etage = int(m.group(1))
+            if m.group(2):
+                nb_etages = int(m.group(2))
+                features_found.append(f"Étage {etage}/{nb_etages}")
+            else:
+                features_found.append(f"Étage {etage}")
+
+    # ── 2. DPE class ─────────────────────────────────────────────
+    dpe_classe: str | None = None
+
+    # Plain-text patterns
+    m = re.search(
+        r'(?:classe\s+[eé]nergie|dpe|[eé]tiquette\s+[eé]nerg[eé]tique)\s*:?\s*([A-G])\b',
+        text, re.IGNORECASE,
+    )
+    if m:
+        dpe_classe = m.group(1).upper()
+        features_found.append(f"DPE {dpe_classe}")
+
+    # Fallback: look in elements with DPE-related class/id names
+    if not dpe_classe:
+        for tag in soup.find_all(
+            True,
+            class_=re.compile(r'dpe|energy|energie|diagnostic', re.IGNORECASE),
+        ):
+            tag_text = tag.get_text(" ", strip=True)
+            m2 = re.search(r'\b([A-G])\b', tag_text)
+            if m2:
+                dpe_classe = m2.group(1).upper()
+                features_found.append(f"DPE {dpe_classe}")
+                break
+
+    # ── 3. Renovation & quality keywords ─────────────────────────
+    reno_hits: list[str] = [kw for kw in RENOVATION_KEYWORDS if kw.lower() in text_lower]
+    quality_hits: list[str] = [kw for kw in QUALITY_KEYWORDS if kw.lower() in text_lower]
+    features_found.extend(reno_hits)
+    features_found.extend(quality_hits)
+
+    renovation_score = len(reno_hits) / len(RENOVATION_KEYWORDS)
+    quality_score = len(quality_hits) / len(QUALITY_KEYWORDS)
+
+    # ── 4. Monthly charges ───────────────────────────────────────
+    charges_mensuelles: int | None = None
+    for pattern in [
+        r'charges?\s*:?\s*([\d\s\xa0]+)\s*€',
+        r'([\d\s\xa0]+)\s*€\s*/?\s*mois\s+de\s+charges?',
+        r'charges?\s+(?:de\s+)?([\d\s\xa0]+)\s*€\s*/?\s*mois',
+    ]:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                val = int(m.group(1).replace(" ", "").replace("\xa0", ""))
+                if 10 < val < 5000:  # sanity check
+                    charges_mensuelles = val
+                    features_found.append(f"Charges {val} €/mois")
+                    break
+            except Exception:
+                pass
+
+    return {
+        "etage": etage,
+        "nb_etages": nb_etages,
+        "dpe_classe": dpe_classe,
+        "renovation_score": round(renovation_score, 3),
+        "quality_score": round(quality_score, 3),
+        "charges_mensuelles": charges_mensuelles,
+        "features_found": features_found,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -607,15 +748,17 @@ def analyze_listing_url(url: str) -> dict:
         return {
             "success": False, "error": f"Erreur HTTP {exc.response.status_code} — l'annonce est peut-être expirée ou bloquée par le site.",
             "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
-            "prix_predit_m2": 0, "prix_predit_total": 0, "gem_score": 0,
+            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
+            "listing_extras": {}, "corrections": {},
         }
     except Exception as exc:
         return {
             "success": False, "error": f"Impossible de récupérer la page : {exc}",
             "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
-            "prix_predit_m2": 0, "prix_predit_total": 0, "gem_score": 0,
+            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
+            "listing_extras": {}, "corrections": {},
         }
 
     # ── 2. Validate extracted data ────────────────────────────────
@@ -641,8 +784,9 @@ def analyze_listing_url(url: str) -> dict:
             ),
             "titre": titre, "prix_annonce": prix, "surface": surface,
             "pieces": pieces, "arrondissement": arr,
-            "prix_predit_m2": 0, "prix_predit_total": 0, "gem_score": 0,
+            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
+            "listing_extras": {}, "corrections": {},
         }
 
     # ── 3. Lat/lon : use scraped if available, else centroid ──────
@@ -654,9 +798,33 @@ def analyze_listing_url(url: str) -> dict:
     if pieces <= 0:
         pieces = max(1, round(surface / 25))
 
+    # ── 3b. Extract listing features (floor, DPE, renovation) ────
+    _raw_html: str = raw_data.pop("_raw", "") or ""
+    _soup: BeautifulSoup | None = raw_data.pop("_soup", None)
+    listing_extras: dict = {}
+    floor_corr = dpe_corr = reno_corr = 1.0
+
+    try:
+        if _soup is not None or _raw_html:
+            if _soup is None:
+                _soup = BeautifulSoup(_raw_html, "html.parser")
+            listing_extras = extract_listing_features(_raw_html, _soup)
+
+            etage_val = listing_extras.get("etage")
+            dpe_val   = listing_extras.get("dpe_classe")
+            reno_val  = listing_extras.get("renovation_score", 0.0)
+
+            if etage_val is not None:
+                floor_corr = FLOOR_CORRECTIONS.get(min(etage_val, 5), 1.04)
+            if dpe_val:
+                dpe_corr = DPE_CORRECTIONS.get(dpe_val, 1.0)
+            reno_corr = 0.95 + reno_val * 0.13
+    except Exception:
+        listing_extras = {}
+
     # ── 4. Predict ────────────────────────────────────────────────
     try:
-        prix_m2, prix_total, shap_top3 = _predict_and_explain(
+        prix_m2_lgbm, _, shap_top3 = _predict_and_explain(
             surface=surface, pieces=pieces,
             arrondissement=arr, latitude=lat, longitude=lon,
         )
@@ -665,9 +833,14 @@ def analyze_listing_url(url: str) -> dict:
             "success": False, "error": f"Erreur modèle : {exc}",
             "titre": titre, "prix_annonce": prix, "surface": surface,
             "pieces": pieces, "arrondissement": arr,
-            "prix_predit_m2": 0, "prix_predit_total": 0, "gem_score": 0,
+            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
+            "listing_extras": {}, "corrections": {},
         }
+
+    # ── 4b. Apply listing corrections ────────────────────────────
+    prix_m2 = prix_m2_lgbm * floor_corr * dpe_corr * reno_corr
+    prix_total = int(prix_m2 * surface)
 
     # ── 5. Gem score ─────────────────────────────────────────────
     prix_affiche_m2 = prix / surface
@@ -676,23 +849,31 @@ def analyze_listing_url(url: str) -> dict:
     gain_potentiel = max(0, int(prix_total - prix))
 
     return {
-        "success":         True,
-        "source":          raw_data.get("source", ""),
-        "titre":           titre,
-        "prix_annonce":    int(prix),
-        "surface":         float(surface),
-        "pieces":          int(pieces),
-        "arrondissement":  int(arr),
-        "latitude":        float(lat),
-        "longitude":       float(lon),
-        "prix_affiche_m2": int(prix_affiche_m2),
-        "prix_predit_m2":  round(prix_m2, 0),
-        "prix_predit_total": int(prix_total),
-        "gem_score":       round(gem_score, 4),
-        "gain_potentiel":  gain_potentiel,
-        "is_hidden_gem":   gem_score > 0.08,
-        "shap_top3":       shap_top3,
-        "error":           None,
+        "success":            True,
+        "source":             raw_data.get("source", ""),
+        "titre":              titre,
+        "prix_annonce":       int(prix),
+        "surface":            float(surface),
+        "pieces":             int(pieces),
+        "arrondissement":     int(arr),
+        "latitude":           float(lat),
+        "longitude":          float(lon),
+        "prix_affiche_m2":    int(prix_affiche_m2),
+        "prix_predit_m2_brut": round(prix_m2_lgbm, 0),
+        "prix_predit_m2":     round(prix_m2, 0),
+        "prix_predit_total":  prix_total,
+        "gem_score":          round(gem_score, 4),
+        "gain_potentiel":     gain_potentiel,
+        "is_hidden_gem":      gem_score > 0.08,
+        "shap_top3":          shap_top3,
+        "listing_extras":     listing_extras,
+        "corrections": {
+            "floor_corr": round(floor_corr, 4),
+            "dpe_corr":   round(dpe_corr, 4),
+            "reno_corr":  round(reno_corr, 4),
+            "total_corr": round(floor_corr * dpe_corr * reno_corr, 4),
+        },
+        "error": None,
     }
 
 
@@ -716,10 +897,17 @@ if __name__ == "__main__":
             print(f"  Surface   : {r['surface']} m2  /  {r['pieces']} pieces")
             print(f"  Arr.      : {r['arrondissement']}e")
             print(f"  Prix ann. : {r['prix_annonce']:,} EUR  ({r['prix_affiche_m2']:,} EUR/m2)")
-            print(f"  Prix pred.: {r['prix_predit_total']:,} EUR  ({r['prix_predit_m2']:,.0f} EUR/m2)")
+            print(f"  Prix brut : {r['prix_predit_m2_brut']:,.0f} EUR/m2  (LightGBM)")
+            print(f"  Prix pred.: {r['prix_predit_total']:,} EUR  ({r['prix_predit_m2']:,.0f} EUR/m2)  [après corrections]")
             badge = "[HIDDEN GEM]" if r["is_hidden_gem"] else ("[SURCOTE]" if r["gem_score"] < 0 else "[CORRECT]")
             print(f"  Gem score : {r['gem_score']*100:.1f}%  {badge}")
             print(f"  Gain pot. : {r['gain_potentiel']:,} EUR")
+            ex = r.get("listing_extras", {})
+            if ex.get("features_found"):
+                print(f"  Détectés  : {', '.join(ex['features_found'])}")
+            c = r.get("corrections", {})
+            if c.get("total_corr", 1.0) != 1.0:
+                print(f"  Corrections: étage×{c['floor_corr']} DPE×{c['dpe_corr']} réno×{c['reno_corr']:.3f} = ×{c['total_corr']:.3f}")
             for s in r["shap_top3"]:
                 sign = "+" if s["impact"] > 0 else ""
                 print(f"  SHAP      : {s['feature']} = {sign}{s['impact']:,} EUR/m2")
