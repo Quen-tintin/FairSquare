@@ -8,6 +8,10 @@ v2.1 additions
 - Street-level target encoding (adresse_code_voie)  → +10% R²
 - Fine-grained grid encoding (0.005° lat/lon cells)
 - Quadratic spatial features (lat², lon², lat×lon)
+
+v3.0 additions
+--------------
+- voie_recent_prix_m2: rolling 12-month median prix/m² on same street
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ FEATURE_COLS_V2 = [
     # Location — fine
     "voie_target_enc",          # mean prix_m2 per street (Bayesian smoothed)
     "grid_target_enc",          # mean prix_m2 per ~500m grid cell
+    "voie_recent_prix_m2",      # rolling 12-month median on same street (LOO)
     # Raw coordinates + quadratic terms
     "longitude",
     "latitude",
@@ -127,6 +132,78 @@ def compute_target_encodings(df_train: pd.DataFrame) -> dict:
     }
 
 
+def compute_voie_recent_prix_m2(df: pd.DataFrame) -> pd.Series:
+    """
+    For each row, compute the median prix_m2 of all OTHER transactions on the
+    same *adresse_code_voie* in the 12 months BEFORE that transaction's date.
+
+    Leave-one-out by date: a row only sees transactions with date < its own date
+    (and within the 365-day window), so it never includes itself.
+
+    Returns a Series aligned to df's original index.
+    Rows with no prior data on their voie get NaN (caller should fillna global_mean).
+    """
+    if "adresse_code_voie" not in df.columns or "date_mutation" not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+
+    df_sorted = df.sort_values("date_mutation")
+    results = pd.Series(np.nan, index=df_sorted.index, dtype=float)
+    one_year = np.timedelta64(365, "D")
+
+    for _voie, group in df_sorted.groupby("adresse_code_voie", sort=False):
+        dates = group["date_mutation"].values.astype("datetime64[D]")
+        prices = group["prix_m2"].values.astype(float)
+        n = len(prices)
+        voie_results = np.full(n, np.nan)
+
+        for i in range(n):
+            # upper bound: strict (exclude same-date rows — true LOO)
+            hi = int(np.searchsorted(dates, dates[i], side="left"))
+            lo = int(np.searchsorted(dates, dates[i] - one_year, side="left"))
+            window = prices[lo:hi]
+            if len(window) >= 1:
+                voie_results[i] = float(np.median(window))
+
+        results.loc[group.index] = voie_results
+
+    return results.reindex(df.index)
+
+
+def compute_voie_recent_lookup(df_train: pd.DataFrame, months: int = 12) -> tuple[dict, dict]:
+    """
+    Build inference-time lookup dicts from the training set.
+
+    Returns
+    -------
+    voie_recent_median_lookup : str(adresse_code_voie) → float
+        Median prix_m2 for each street over the last `months` months of training data.
+    arr_recent_median_lookup : int(arrondissement) → float
+        Same but at arrondissement level (fallback when voie is unknown at inference).
+    """
+    if "date_mutation" not in df_train.columns:
+        return {}, {}
+
+    cutoff = df_train["date_mutation"].max() - pd.DateOffset(months=months)
+    recent = df_train[df_train["date_mutation"] >= cutoff].copy()
+
+    voie_lookup: dict = {}
+    if "adresse_code_voie" in recent.columns:
+        voie_lookup = {
+            str(k): float(v)
+            for k, v in recent.groupby("adresse_code_voie")["prix_m2"].median().items()
+        }
+
+    arr_lookup: dict = {}
+    if "code_postal" in recent.columns:
+        arr = (recent["code_postal"].fillna(75001).astype(float) % 100).astype(int)
+        arr_lookup = {
+            int(k): float(v)
+            for k, v in recent.groupby(arr)["prix_m2"].median().items()
+        }
+
+    return voie_lookup, arr_lookup
+
+
 # Backwards-compatible alias
 def compute_arr_target_enc(df_train: pd.DataFrame) -> dict[int, float]:
     """Compute mean prix_m2 per arrondissement (train-only)."""
@@ -140,16 +217,20 @@ def add_features(
     global_mean: float = 10796.0,
     voie_enc: dict[str, float] | None = None,
     grid_enc: dict[str, float] | None = None,
+    voie_recent_lookup: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     Add engineered features to *df* in-place copy.
 
     Parameters
     ----------
-    arr_target_enc : dict mapping arrondissement (1-20) → mean prix_m2.
-    global_mean    : fallback mean when encoding key is missing.
-    voie_enc       : dict mapping adresse_code_voie → smoothed mean prix_m2.
-    grid_enc       : dict mapping "{lat_grid}_{lon_grid}" → smoothed mean prix_m2.
+    arr_target_enc    : dict mapping arrondissement (1-20) → mean prix_m2.
+    global_mean       : fallback mean when encoding key is missing.
+    voie_enc          : dict mapping adresse_code_voie → smoothed mean prix_m2.
+    grid_enc          : dict mapping "{lat_grid}_{lon_grid}" → smoothed mean prix_m2.
+    voie_recent_lookup: dict mapping adresse_code_voie → recent 12-month median prix_m2.
+                        At inference time, use arr_recent_median_lookup from the artifact
+                        and pre-set df["voie_recent_prix_m2"] before calling this function.
     """
     data = df.copy()
 
@@ -218,6 +299,21 @@ def add_features(
     else:
         data["grid_target_enc"] = data["voie_target_enc"]
 
+    # ── Recent voie price (rolling 12-month median, LOO) ─────────────
+    # If the column is already present (pre-computed at training time), use it.
+    # Otherwise look up from the provided dict (inference time).
+    if "voie_recent_prix_m2" not in data.columns:
+        if voie_recent_lookup and "adresse_code_voie" in data.columns:
+            data["voie_recent_prix_m2"] = (
+                data["adresse_code_voie"].astype(str)
+                .map(voie_recent_lookup)
+                .fillna(global_mean)
+            )
+        else:
+            data["voie_recent_prix_m2"] = global_mean
+    else:
+        data["voie_recent_prix_m2"] = data["voie_recent_prix_m2"].fillna(global_mean)
+
     # ── Interaction ───────────────────────────────────────────────────
     data["arr_price_x_log_surface"] = data["arr_target_enc"] * data["log_surface"]
 
@@ -239,6 +335,7 @@ def prepare_features_v2(
     global_mean: float = 10796.0,
     voie_enc: dict[str, float] | None = None,
     grid_enc: dict[str, float] | None = None,
+    voie_recent_lookup: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Full pipeline: add features → select columns → drop NaN rows.
@@ -250,6 +347,7 @@ def prepare_features_v2(
         global_mean=global_mean,
         voie_enc=voie_enc,
         grid_enc=grid_enc,
+        voie_recent_lookup=voie_recent_lookup,
     )
 
     X = data[FEATURE_COLS_V2].copy()

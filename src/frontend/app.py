@@ -156,6 +156,10 @@ def _compute_shap(surface: float, pieces: int, arrondissement: int,
         with open(_MODEL_PATH, "rb") as _f:
             art = pickle.load(_f)
 
+        _global_mean = art.get("global_mean", 10015.0)
+        _arr_recent  = art.get("arr_recent_median_lookup", {})
+        _recent_val  = float(_arr_recent.get(arrondissement, _global_mean))
+
         row = {
             "surface_reelle_bati":       surface,
             "nombre_pieces_principales": pieces,
@@ -166,11 +170,12 @@ def _compute_shap(surface: float, pieces: int, arrondissement: int,
             "nombre_lots": 1,
             "lot1_surface_carrez": surface,
             "prix_m2": 0.0,
+            "voie_recent_prix_m2": _recent_val,
         }
         df_feat = add_features(
             pd.DataFrame([row]),
             arr_target_enc=art.get("arr_enc"),
-            global_mean=art.get("global_mean", 10015.0),
+            global_mean=_global_mean,
         )
         feat_cols = art.get("feature_cols", FEATURE_COLS_V2)
         X = df_feat[feat_cols].astype(float)
@@ -202,6 +207,7 @@ def _compute_shap(surface: float, pieces: int, arrondissement: int,
             "mois":                      "Mois de vente",
             "trimestre":                 "Trimestre",
             "nombre_lots":               "Nb. lots immeuble",
+            "voie_recent_prix_m2":       "Prix récents (même rue)",
             "pieces_per_m2":             "Densité pièces/m²",
             "surface_per_piece":         "Surface / pièce",
             "carrez_ratio":              "Ratio Carrez",
