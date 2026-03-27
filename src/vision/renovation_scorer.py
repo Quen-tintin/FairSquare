@@ -43,8 +43,8 @@ logger = get_logger(__name__)
 
 SpaceCategory = Literal["Étroit", "Standard", "Spacieux"]
 
-# Modèle par défaut — vision multimodale, 500 RPD sur le tier gratuit
-DEFAULT_MODEL = "models/gemini-3.1-flash-lite-preview"
+# Gemini 3.1 Flash Lite — 500 RPD, 6 RPM (meilleur quota dispo pour la vision)
+DEFAULT_MODEL = "gemini-2.0-flash-lite"
 
 # ------------------------------------------------------------------ #
 #  Prompt                                                              #

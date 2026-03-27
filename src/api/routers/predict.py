@@ -4,6 +4,7 @@ Falls back to a rule-based estimate if no model artifact exists.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -53,6 +54,7 @@ def _load_artifact() -> dict[str, Any] | None:
         import joblib
         return joblib.load(ARTIFACT_PATH)
     except Exception:
+        logging.exception("Failed to load model artifact from %s", ARTIFACT_PATH)
         return None
 
 
@@ -92,7 +94,7 @@ def _build_input_df(req: PredictionRequest) -> pd.DataFrame:
                 for col in _OSM_COLS:
                     df[col] = float(osm_row[col].values[0])
     except Exception:
-        pass  # defaults already set above
+        logging.warning("OSM enrichment failed — using Paris-wide medians", exc_info=True)
 
     return df
 
@@ -113,16 +115,21 @@ def _shap_contributions(model: Any, X: pd.DataFrame) -> list[ShapContribution]:
             "carrez_ratio":            "Ratio Carrez",
             "arrondissement":          "Arrondissement",
             "arr_target_enc":          "Moyenne arr.",
-            "arr_price_x_log_surface": "Arr. × surface",
             "is_premium_arr":          "Arr. premium",
             "dist_center_km":          "Distance centre",
+            "voie_target_enc":         "Rue / voie",
+            "grid_target_enc":         "Zone géographique fine",
+            "voie_recent_prix_m2":     "Prix récents (même rue)",
             "longitude":               "Longitude",
             "latitude":                "Latitude",
+            "lat_sq":                  "Coord. lat²",
+            "lon_sq":                  "Coord. lon²",
+            "lat_lon_cross":           "Coord. lat×lon",
+            "arr_price_x_log_surface": "Arr. × surface",
             "annee":                   "Année transaction",
             "mois":                    "Mois",
             "trimestre":               "Trimestre",
             "nombre_lots":             "Nb lots",
-            "voie_recent_prix_m2":     "Prix récents (même rue)",
         }
         for feat, val in zip(FEATURE_COLS_V2, sv):
             contribs.append(ShapContribution(
@@ -133,6 +140,7 @@ def _shap_contributions(model: Any, X: pd.DataFrame) -> list[ShapContribution]:
         contribs.sort(key=lambda c: abs(c.value), reverse=True)
         return contribs[:8]
     except Exception:
+        logging.warning("SHAP computation failed", exc_info=True)
         return []
 
 
