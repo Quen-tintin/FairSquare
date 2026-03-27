@@ -122,6 +122,7 @@ def _shap_contributions(model: Any, X: pd.DataFrame) -> list[ShapContribution]:
             "mois":                    "Mois",
             "trimestre":               "Trimestre",
             "nombre_lots":             "Nb lots",
+            "voie_recent_prix_m2":     "Prix récents (même rue)",
         }
         for feat, val in zip(FEATURE_COLS_V2, sv):
             contribs.append(ShapContribution(
@@ -172,6 +173,12 @@ async def predict(req: PredictionRequest):
 
     # Build input
     df_in = _build_input_df(req)
+
+    # voie_recent_prix_m2: use arrondissement-level recent median from artifact
+    # (voie code is not available from the API request, so arr-level is the fallback)
+    arr_recent = artifact.get("arr_recent_median_lookup", {})
+    df_in["voie_recent_prix_m2"] = float(arr_recent.get(req.arrondissement, global_m))
+
     df_in = add_features(df_in, arr_target_enc=arr_enc, global_mean=global_m)
     # Use v4 feature set (includes OSM) if the artifact was trained with it
     feat_cols = artifact.get("feature_cols", FEATURE_COLS_V2)
