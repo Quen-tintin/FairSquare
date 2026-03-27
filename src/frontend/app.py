@@ -429,6 +429,44 @@ def price_card(label: str, price: int, price_m2: int,
     )
 
 
+# ── Bookmarklet query-param ingestion ────────────────────────────────
+# When the user clicks the bookmarklet on a SeLoger/LeBonCoin page,
+# the JS extracts listing data and opens FairSquare with ?bm=1&prix=…
+# We capture those params here (once), store them in session state,
+# clear the URL, and rerun so the URL analyzer page auto-fires.
+_qp = st.query_params
+if _qp.get("bm") == "1":
+    _bm_prix    = int(_qp.get("prix", 0) or 0)
+    _bm_surface = float(_qp.get("surface", 0) or 0)
+    _bm_arr     = int(_qp.get("arr", 0) or 0)
+    _bm_pieces  = int(_qp.get("pieces", 3) or 3)
+    _bm_url     = _qp.get("url", "")
+    _bm_titre   = _qp.get("titre", "")
+    _bm_photo   = _qp.get("photo", "")
+
+    if _bm_prix > 0 and _bm_surface > 0:
+        # Full data extracted — queue auto-analysis
+        st.session_state.url_result = None
+        st.session_state.url_manual_state = None
+        st.session_state.bm_data = {
+            "prix": _bm_prix, "surface": _bm_surface,
+            "pieces": _bm_pieces,
+            "arr": _bm_arr if 1 <= _bm_arr <= 20 else 11,
+            "url": _bm_url, "titre": _bm_titre, "photo": _bm_photo,
+        }
+    else:
+        # Partial extraction — pre-fill manual form
+        st.session_state.url_result = None
+        st.session_state.url_manual_state = {
+            "partial": {"arrondissement": _bm_arr if 1 <= _bm_arr <= 20 else 11},
+            "url": _bm_url,
+        }
+
+    # Force navigation to URL analyzer page
+    st.session_state["_nav"] = "🔗 Analyser une URL"
+    st.query_params.clear()
+    st.rerun()
+
 # ── Sidebar ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -472,6 +510,7 @@ with st.sidebar:
             "🗺️ Explorer DVF",
         ],
         label_visibility="collapsed",
+        key="_nav",
     )
 
     st.divider()
@@ -773,6 +812,32 @@ elif page == "🔗 Analyser une URL":
         st.session_state.url_manual_state = None   # {"partial": dict, "url": str}
     if "url_result" not in st.session_state:
         st.session_state.url_result = None
+
+    # ── Auto-analysis from bookmarklet ────────────────────────────
+    if "bm_data" in st.session_state:
+        _bm = st.session_state.pop("bm_data")
+        with st.spinner("Analyse de l'annonce en cours…"):
+            try:
+                from src.frontend.url_analyzer import analyze_listing_url
+                _bm_result = analyze_listing_url(
+                    _bm["url"],
+                    manual_overrides={
+                        "prix":          _bm["prix"],
+                        "surface":       _bm["surface"],
+                        "pieces":        _bm["pieces"],
+                        "arrondissement": _bm["arr"],
+                    },
+                )
+                # Inject titre and photo from bookmarklet (scraping was skipped)
+                if _bm_result.get("success"):
+                    if not _bm_result.get("titre") and _bm.get("titre"):
+                        _bm_result["titre"] = _bm["titre"]
+                    if not _bm_result.get("photo_url") and _bm.get("photo"):
+                        _bm_result["photo_url"] = _bm["photo"]
+                    _bm_result["source"] = "SeLoger (bookmarklet)"
+            except Exception as exc:
+                _bm_result = {"success": False, "error": str(exc)}
+        st.session_state.url_result = _bm_result
 
     url_input = st.text_input(
         "URL de l'annonce",
@@ -1114,6 +1179,56 @@ elif page == "🔗 Analyser une URL":
                         showlegend=False, height=260,
                     )
                     st.plotly_chart(fig, use_container_width=True)
+
+    # ── Bookmarklet install ───────────────────────────────────────
+    with st.expander("🔖 Analyser en 1 clic depuis SeLoger (bookmarklet)"):
+        st.markdown(
+            "**Installation** — glissez le bouton ci-dessous dans votre barre de favoris :"
+        )
+
+        # The bookmarklet JS — __URL__ is replaced at runtime by the app's own origin
+        _BM_TEMPLATE = r"""javascript:(function(){var prix=0,surface=0,pieces=0,arr=0,titre='',photo='';[].slice.call(document.querySelectorAll('script[type="application/ld+json"]')).forEach(function(s){try{var d=JSON.parse(s.textContent);if(Array.isArray(d))d=d[0];if(d&&['Apartment','House','RealEstateListing','Product'].indexOf(d['@type'])>-1){if(!titre)titre=d.name||'';if(!prix&&d.offers){var o=Array.isArray(d.offers)?d.offers[0]:d.offers;prix=parseInt((o&&o.price)||0);}if(!surface&&d.floorSize){var fs=d.floorSize;surface=parseFloat((typeof fs=='object'?fs.value:fs)||0);}if(!pieces&&d.numberOfRooms)pieces=parseInt(d.numberOfRooms||0);if(!arr&&d.address&&d.address.postalCode){var c=parseInt(d.address.postalCode);if(c>75000&&c<75021)arr=c%100;}}}catch(e){}});try{var nd=document.getElementById('__NEXT_DATA__');if(nd){var n=JSON.parse(nd.textContent),ad=(((n.props||{}).pageProps)||{}).ad||{};if(!titre)titre=ad.subject||'';if(!prix){var p=ad.price;prix=parseInt((Array.isArray(p)?p[0]:p)||0);}var at={};(ad.attributes||[]).forEach(function(a){at[a.key]=a.value_label||a.value;});if(!surface)surface=parseFloat(at.square||0);if(!pieces)pieces=parseInt(at.rooms||0);if(!arr&&ad.location&&ad.location.zipcode){var z=parseInt(ad.location.zipcode);if(z>75000&&z<75021)arr=z%100;}}}catch(e){}var og=document.querySelector('meta[property="og:title"]');var ot=(og&&og.content)||'';if(!titre)titre=ot||document.title;if(!prix){var t=titre.replace(/[\s\xa0]/g,'');var m=t.match(/(\d{5,7})\u20ac/);if(m)prix=parseInt(m[1]);}if(!surface){var m=titre.match(/(\d+[.,]?\d*)\s*m[²2]/);if(m)surface=parseFloat(m[1].replace(',','.'));}if(!pieces&&ot){var m=ot.match(/[TF](\d)/);if(m)pieces=parseInt(m[1]);}if(!(arr>=1&&arr<=20)){var m=decodeURIComponent(location.href).match(/paris-(\d{1,2})(?:er|e|eme|\u00e8me)?-75/i);if(m)arr=parseInt(m[1]);}var img=document.querySelector('meta[property="og:image"]');if(img&&img.content)photo=img.content;var base='__URL__';var p=new URLSearchParams({bm:'1',url:location.href,prix:prix,surface:surface,pieces:pieces||3,arr:arr||0,titre:titre.substring(0,120),photo:photo.substring(0,300)});if(!prix||!surface)alert('FairSquare\nprix='+prix+'\u20ac  surface='+surface+'m\u00b2  arr='+arr+'e\n\nDes champs sont manquants \u2014 compl\u00e9tez-les dans l\'app.');window.open(base+'?'+p.toString(),'_blank');})();"""
+
+        import streamlit.components.v1 as _components
+        _components.html(
+            f"""
+            <style>
+              #bm-link {{
+                display:inline-block;
+                background:linear-gradient(135deg,#00D4AA,#0095FF);
+                color:#0A0E1A !important;
+                font-weight:800;
+                font-size:0.95em;
+                padding:9px 22px;
+                border-radius:20px;
+                text-decoration:none;
+                letter-spacing:0.5px;
+                cursor:grab;
+                user-select:none;
+              }}
+              #bm-link:hover {{ opacity:0.85; }}
+              p {{ color:#8899BB; font-family:sans-serif; font-size:0.82em; margin-top:8px; }}
+            </style>
+            <script>
+              var base = window.parent.location.origin;
+              var bm = {json.dumps(_BM_TEMPLATE)}.replace('__URL__', base);
+              document.getElementById('bm-link').href = bm;
+            </script>
+            <a id="bm-link" href="#">🔖 FairSquare — Analyser</a>
+            <p>⬆ Glissez ce bouton dans votre barre de favoris (ou clic droit → Ajouter aux favoris)</p>
+            """,
+            height=80,
+        )
+
+        st.markdown("""
+**Utilisation**
+1. Ouvrez n'importe quelle annonce SeLoger ou LeBonCoin
+2. Cliquez le favori **FairSquare — Analyser**
+3. FairSquare s'ouvre automatiquement avec l'analyse — zéro saisie
+
+**Ce que le bookmarklet extrait** depuis la page déjà chargée dans votre navigateur :
+prix · surface · pièces · arrondissement · titre · photo
+""")
 
     # ── Aide ──────────────────────────────────────────────────────
     with st.expander("Sources supportées & limitations"):
