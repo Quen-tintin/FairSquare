@@ -845,6 +845,96 @@ elif page == "🔗 Analyser une URL":
             m3.metric("Gain potentiel", gem_delta)
             m4.metric("Gem score", f"{gem_score_pct:.1f}%")
 
+            # ── Détails extraits de l'annonce ─────────────────────
+            _extras = result.get("listing_extras", {})
+            _corr   = result.get("corrections", {})
+            _brut   = result.get("prix_predit_m2_brut", result["prix_predit_m2"])
+            _final  = int(result["prix_predit_m2"])
+            _has_extras = bool(_extras.get("features_found")) or _corr.get("total_corr", 1.0) != 1.0
+
+            with st.expander("📋 Détails extraits de l'annonce", expanded=_has_extras):
+                if not _has_extras:
+                    st.caption("Aucune caractéristique supplémentaire détectée (corrections = neutres).")
+                else:
+                    _c1, _c2 = st.columns(2)
+                    with _c1:
+                        st.markdown("**Éléments détectés**")
+                        _etage = _extras.get("etage")
+                        _dpe   = _extras.get("dpe_classe")
+                        _reno  = _extras.get("renovation_score", 0.0)
+                        _charges = _extras.get("charges_mensuelles")
+                        _nb_etages = _extras.get("nb_etages")
+
+                        etage_label = "non détecté"
+                        if _etage is not None:
+                            if _etage == 0:
+                                etage_label = "RDC"
+                            elif _etage >= 6:
+                                etage_label = "Dernier étage"
+                            else:
+                                suffix = "er" if _etage == 1 else "e"
+                                etage_label = f"{_etage}{suffix} étage"
+                                if _nb_etages:
+                                    etage_label += f" / {_nb_etages}"
+
+                        st.markdown(
+                            f'<div style="background:#131929;border:1px solid #1E2D45;'
+                            f'border-radius:10px;padding:14px 18px;line-height:2.2">'
+                            f'<span style="color:#8899BB">Étage</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">{etage_label}</span><br>'
+                            f'<span style="color:#8899BB">DPE</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">{_dpe if _dpe else "non détecté"}</span><br>'
+                            f'<span style="color:#8899BB">Score rénovation</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">{_reno*100:.0f}%</span><br>'
+                            f'<span style="color:#8899BB">Charges</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">'
+                            f'{"non détectées" if _charges is None else f"{_charges:,} €/mois"}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        _kws = _extras.get("features_found", [])
+                        if _kws:
+                            st.caption("Mots-clés : " + " · ".join(_kws))
+
+                    with _c2:
+                        st.markdown("**Corrections appliquées**")
+                        _fc = _corr.get("floor_corr", 1.0)
+                        _dc = _corr.get("dpe_corr", 1.0)
+                        _rc = _corr.get("reno_corr", 1.0)
+                        _tc = _corr.get("total_corr", 1.0)
+
+                        def _pct(v: float) -> str:
+                            diff = (v - 1.0) * 100
+                            if abs(diff) < 0.05:
+                                return "neutre"
+                            sign = "+" if diff > 0 else ""
+                            return f"{sign}{diff:.1f}%"
+
+                        st.markdown(
+                            f'<div style="background:#131929;border:1px solid #1E2D45;'
+                            f'border-radius:10px;padding:14px 18px;line-height:2.2">'
+                            f'<span style="color:#8899BB">Étage</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">×{_fc:.3f} ({_pct(_fc)})</span><br>'
+                            f'<span style="color:#8899BB">DPE</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">×{_dc:.3f} ({_pct(_dc)})</span><br>'
+                            f'<span style="color:#8899BB">Rénovation</span> &nbsp; '
+                            f'<span style="color:#F0F4FF;font-weight:700">×{_rc:.3f} ({_pct(_rc)})</span><br>'
+                            f'<span style="color:#8899BB">Total</span> &nbsp; '
+                            f'<span style="color:#00D4AA;font-weight:700">×{_tc:.3f} ({_pct(_tc)})</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f'<div style="background:#0A0E1A;border:1px solid #1E2D45;'
+                            f'border-radius:8px;padding:10px 14px;margin-top:10px;font-size:0.88em">'
+                            f'<span style="color:#8899BB">Prix modèle brut</span> &nbsp; '
+                            f'<span style="color:#C4D0E8;font-weight:600">{int(_brut):,} €/m²</span><br>'
+                            f'<span style="color:#8899BB">→ après corrections</span> &nbsp; '
+                            f'<span style="color:#00D4AA;font-weight:700">{_final:,} €/m²</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
             st.divider()
 
             # ── Détails + SHAP ────────────────────────────────────
