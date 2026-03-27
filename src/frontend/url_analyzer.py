@@ -819,130 +819,422 @@ def _predict_and_explain(
 
 
 # ────────────────────────────────────────────────────────────────────
+# URL pattern extractor (no HTTP needed)
+# ────────────────────────────────────────────────────────────────────
+
+def _extract_from_url_pattern(url: str) -> dict:
+    """Extract listing metadata from URL structure without any HTTP request."""
+    result: dict = {}
+
+    # SeLoger arrondissement: paris-11eme-75, paris-8e-75, paris-1er-75
+    m = re.search(r'paris-(\d{1,2})(?:er|e|eme|ème)?-75', url, re.IGNORECASE)
+    if m:
+        arr = int(m.group(1))
+        if 1 <= arr <= 20:
+            result["arrondissement"] = arr
+
+    # Listing ID: last long number before .htm (or end of path segment)
+    m = re.search(r'/(\d{6,12})(?:\.htm)?(?:[?#/]|$)', url)
+    if m:
+        result["listing_id"] = m.group(1)
+
+    # Property type
+    url_lower = url.lower()
+    if "appartement" in url_lower:
+        result["type_bien"] = "appartement"
+    elif "maison" in url_lower:
+        result["type_bien"] = "maison"
+
+    return result
+
+
+# ────────────────────────────────────────────────────────────────────
+# SeLoger lightweight API (faster than full HTML scraping)
+# ────────────────────────────────────────────────────────────────────
+
+def _try_seloger_api(listing_id: str) -> dict | None:
+    """
+    Try SeLoger internal API endpoints before falling back to HTML scraping.
+    Returns a scraped-data dict (same shape as _scrape_seloger), or None.
+    """
+    mobile_headers = {
+        "User-Agent": "SeLoger/2023 CFNetwork/1474 Darwin/23.0.0",
+        "x-device-type": "phone",
+        "x-platform": "ios",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-FR,fr;q=0.9",
+    }
+
+    # Endpoint 1: classic JSON caracteristique endpoint
+    try:
+        api_url = (
+            f"https://www.seloger.com/detail,json,caracteristique_bien.json"
+            f"?idAnnonce={listing_id}"
+        )
+        resp = requests.get(api_url, headers=mobile_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            result: dict = {"source": "SeLoger"}
+            if isinstance(data, dict):
+                _dig_seloger_json(data, result)
+            if result.get("prix") or result.get("surface"):
+                result.setdefault("photo_url", None)
+                return result
+    except Exception:
+        pass
+
+    # Endpoint 2: mobile REST API
+    try:
+        api_url = f"https://api.seloger.com/api/v1/listings/{listing_id}"
+        resp = requests.get(api_url, headers=mobile_headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            result = {"source": "SeLoger"}
+            if isinstance(data, dict):
+                _dig_seloger_json(data, result)
+            if result.get("prix") or result.get("surface"):
+                result.setdefault("photo_url", None)
+                return result
+    except Exception:
+        pass
+
+    return None
+
+
+# ────────────────────────────────────────────────────────────────────
+# HTML paste parser (user copies page source manually)
+# ────────────────────────────────────────────────────────────────────
+
+def _parse_pasted_html(html_text: str, url: str = "") -> dict:
+    """
+    Parse HTML pasted by the user (e.g. from browser View Source).
+    Uses the same extraction strategies as the site-specific scrapers.
+    """
+    try:
+        soup = BeautifulSoup(html_text, "lxml")
+    except Exception:
+        soup = BeautifulSoup(html_text, "html.parser")
+
+    result: dict = {"source": "Collé", "_raw": html_text, "_soup": soup}
+    url_lower = url.lower()
+
+    # ── LeBonCoin: __NEXT_DATA__ ─────────────────────────────────────
+    if "leboncoin" in url_lower:
+        tag = soup.find("script", id="__NEXT_DATA__")
+        if tag and tag.string:
+            try:
+                nd = json.loads(tag.string)
+                ad = _find_nested(nd, ["props", "pageProps", "ad"]) or {}
+                if ad:
+                    result["titre"] = ad.get("subject", "")
+                    price_raw = ad.get("price", [0])
+                    result["prix"] = _to_int(price_raw[0] if isinstance(price_raw, list) else price_raw)
+                    attrs = {a.get("key"): a.get("value_label", a.get("value", ""))
+                             for a in ad.get("attributes", [])}
+                    result["surface"] = _to_float(attrs.get("square", 0))
+                    result["pieces"] = _to_int(attrs.get("rooms", 0))
+                    loc = ad.get("location", {})
+                    result["code_postal"] = str(loc.get("zipcode", ""))
+                    result["arrondissement"] = _arr_from_postal(loc.get("zipcode", 0))
+            except Exception:
+                pass
+
+    # ── JSON-LD (SeLoger, PAP, BienIci) ─────────────────────────────
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            if not isinstance(data, dict):
+                continue
+            if data.get("@type") in ("Apartment", "House", "RealEstateListing", "Product"):
+                if "name" in data and not result.get("titre"):
+                    result["titre"] = data["name"]
+                if "offers" in data and not result.get("prix"):
+                    offers = data["offers"]
+                    if isinstance(offers, list):
+                        offers = offers[0]
+                    result["prix"] = _to_int(offers.get("price", 0))
+                if "floorSize" in data and not result.get("surface"):
+                    fs = data["floorSize"]
+                    result["surface"] = _to_float(fs.get("value", 0) if isinstance(fs, dict) else fs)
+                if "numberOfRooms" in data and not result.get("pieces"):
+                    result["pieces"] = _to_int(data["numberOfRooms"])
+                if "address" in data and not result.get("arrondissement"):
+                    addr = data["address"]
+                    if isinstance(addr, dict):
+                        cp = addr.get("postalCode", "")
+                        result["code_postal"] = str(cp)
+                        arr = _arr_from_postal(cp)
+                        if arr:
+                            result["arrondissement"] = arr
+        except Exception:
+            pass
+
+    # ── window.__PRELOADED_STATE__ / DATA_LAYER ──────────────────────
+    for pattern in [
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});?\s*(?:window|</script>)',
+        r'window\.DATA_LAYER\s*=\s*(\{.*?\});',
+    ]:
+        m = re.search(pattern, html_text, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(1))
+                _dig_seloger_json(obj, result)
+                break
+            except Exception:
+                pass
+
+    # ── Meta tags fallback ───────────────────────────────────────────
+    import html as _html
+
+    def meta(name: str, prop: str | None = None) -> str:
+        tag = (soup.find("meta", {"property": prop}) if prop else None) \
+            or soup.find("meta", {"name": name})
+        return tag.get("content", "").strip() if tag else ""
+
+    og_title  = meta("og:title", "og:title")
+    title_tag = _html.unescape(soup.title.string.strip() if soup.title and soup.title.string else "")
+    meta_desc = meta("description") or meta("og:description", "og:description") or og_title or title_tag
+
+    if not result.get("titre"):
+        result["titre"] = og_title or title_tag
+
+    if not result.get("prix") and meta_desc:
+        nums = [int(n) for n in re.findall(r"\d+", meta_desc.replace("\xa0", "").replace(" ", ""))
+                if int(n) > 10_000 and int(n) < 10_000_000]
+        if nums:
+            result["prix"] = max(nums)
+
+    if not result.get("surface") and meta_desc:
+        m2 = re.search(r"(\d+[\.,]?\d*)\s*m[²2\xb2]", meta_desc)
+        if not m2:
+            m2 = re.search(r"\b(\d{2,3})\s+m\b", meta_desc)
+        if m2:
+            result["surface"] = _to_float(m2.group(1))
+
+    if not result.get("pieces"):
+        for text_src in [og_title, meta_desc]:
+            if not text_src:
+                continue
+            m2 = re.search(r"[TF](\d)", text_src)
+            if m2:
+                result["pieces"] = int(m2.group(1))
+                break
+        if not result.get("pieces") and meta_desc:
+            m2 = re.search(r"(\d+)\s*pi[eè]ces?", meta_desc, re.IGNORECASE)
+            if m2:
+                result["pieces"] = _to_int(m2.group(1))
+
+    if not result.get("arrondissement"):
+        for text_src in [meta_desc, og_title]:
+            if not text_src:
+                continue
+            m2 = re.search(r"Paris\s*\(75(\d{2,3})\)", text_src)
+            if m2:
+                arr = int(m2.group(1)) % 100
+                if 1 <= arr <= 20:
+                    result["arrondissement"] = arr
+                    break
+            m2 = re.search(r"Paris\s+(\d{1,2})(?:er|e|ème|eme)", text_src, re.IGNORECASE)
+            if m2:
+                result["arrondissement"] = int(m2.group(1))
+                break
+        if not result.get("arrondissement") and url:
+            mu = re.search(r"paris-(\d{1,2})(?:er|e|eme|ème)?-75", url, re.IGNORECASE)
+            if mu:
+                result["arrondissement"] = int(mu.group(1))
+
+    # ── Photo ────────────────────────────────────────────────────────
+    if not result.get("photo_url"):
+        result["photo_url"] = _extract_photo_url(soup)
+
+    return result
+
+
+# ────────────────────────────────────────────────────────────────────
 # Main public API
 # ────────────────────────────────────────────────────────────────────
 
-def analyze_listing_url(url: str) -> dict:
+def analyze_listing_url(
+    url: str,
+    manual_overrides: dict | None = None,
+    pasted_html: str | None = None,
+) -> dict:
     """
-    Scrape une annonce immobilière depuis son URL et retourne l'analyse FairSquare.
+    Analyse une annonce immobilière depuis son URL.
+
+    Args:
+        url: URL de l'annonce.
+        manual_overrides: Si fourni, skip le scraping et utilise ces valeurs directement.
+            Clés attendues: prix (int), surface (float), pieces (int), arrondissement (int).
+        pasted_html: Si fourni, parse ce HTML au lieu de faire une requête HTTP.
 
     Returns:
-        {
-            "success": bool,
-            "titre": str,
-            "prix_annonce": int,
-            "surface": float,
-            "pieces": int,
-            "arrondissement": int,
-            "prix_predit_m2": float,
-            "prix_predit_total": int,
-            "gem_score": float,       # (prix_predit_m2 - prix_affiche_m2) / prix_predit_m2
-            "gain_potentiel": int,    # en €
-            "is_hidden_gem": bool,    # gem_score > 0.08
-            "shap_top3": list,        # top 3 facteurs SHAP
-            "error": str | None
-        }
+        Résultat complet {"success": True, ...}
+        ou {"status": "needs_manual_input", "partial": {...}, "message": str}
+        ou {"success": False, "error": str, ...}
     """
     url = url.strip()
 
-    # ── 1. Routing ────────────────────────────────────────────────
-    try:
-        domain = url.lower()
-        if "seloger.com" in domain:
-            raw_data = _scrape_seloger(url)
-        elif "leboncoin.fr" in domain:
-            raw_data = _scrape_leboncoin(url)
-        elif "pap.fr" in domain:
-            raw_data = _scrape_pap(url)
-        elif "bienici.com" in domain:
-            raw_data = _scrape_bienici(url)
-        else:
-            # Generic fallback: try SeLoger-style parsing
-            raw_data = _scrape_seloger(url)
-            raw_data["source"] = "Inconnu"
-    except requests.exceptions.HTTPError as exc:
-        return {
-            "success": False, "error": f"Erreur HTTP {exc.response.status_code} — l'annonce est peut-être expirée ou bloquée par le site.",
-            "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
-            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
-            "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {}, "photo_url": None,
-        }
-    except Exception as exc:
-        return {
-            "success": False, "error": f"Impossible de récupérer la page : {exc}",
-            "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0, "arrondissement": 0,
-            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
-            "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {}, "photo_url": None,
-        }
+    # Step 1: Always extract what we can from the URL (free, no HTTP)
+    url_data = _extract_from_url_pattern(url)
+    listing_id = url_data.get("listing_id")
 
-    # ── 2. Validate extracted data ────────────────────────────────
-    prix      = raw_data.get("prix", 0) or 0
-    surface   = raw_data.get("surface", 0.0) or 0.0
-    pieces    = raw_data.get("pieces", 0) or 0
-    arr       = raw_data.get("arrondissement", 0) or 0
-    titre     = raw_data.get("titre", "") or ""
+    # Shared variables populated by each path below
+    prix: int = 0
+    surface: float = 0.0
+    pieces: int = 0
+    arr: int = 0
+    titre: str = ""
+    photo_url: str | None = None
+    source: str = ""
+    listing_extras: dict = {}
+    floor_corr = dpe_corr = reno_corr = 1.0
+    lat: float | None = None
+    lon: float | None = None
 
-    missing = []
-    if prix <= 0:      missing.append("prix")
-    if surface <= 0:   missing.append("surface")
-    if not (1 <= arr <= 20): missing.append("arrondissement")
+    # ── Path A: manual overrides (skip all scraping) ──────────────────
+    if manual_overrides:
+        prix    = _to_int(manual_overrides.get("prix", 0))
+        surface = _to_float(manual_overrides.get("surface", 0.0))
+        pieces  = _to_int(manual_overrides.get("pieces", 0))
+        arr     = _to_int(manual_overrides.get("arrondissement", url_data.get("arrondissement", 0)))
+        source  = "Manuel"
 
-    if missing:
-        return {
-            "success": False,
-            "error": (
-                f"Données incomplètes extraites ({raw_data.get('source','?')}) — "
-                f"champs manquants : {', '.join(missing)}. "
-                f"Le site utilise probablement du JavaScript dynamique (anti-scraping).\n"
-                f"Extrait : prix={prix}, surface={surface}m², arr={arr}"
-            ),
-            "titre": titre, "prix_annonce": prix, "surface": surface,
-            "pieces": pieces, "arrondissement": arr,
-            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
-            "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {}, "photo_url": raw_data.get("photo_url"),
-        }
+    # ── Path B: parse user-pasted HTML ───────────────────────────────
+    elif pasted_html:
+        raw_data = _parse_pasted_html(pasted_html, url)
+        prix     = raw_data.get("prix", 0) or 0
+        surface  = raw_data.get("surface", 0.0) or 0.0
+        pieces   = raw_data.get("pieces", 0) or 0
+        arr      = raw_data.get("arrondissement", 0) or url_data.get("arrondissement", 0)
+        titre    = raw_data.get("titre", "") or ""
+        photo_url = raw_data.get("photo_url")
+        source   = raw_data.get("source", "Collé")
 
-    # ── 3. Lat/lon : use scraped if available, else centroid ──────
-    lat = raw_data.get("latitude")
-    lon = raw_data.get("longitude")
+        if prix <= 0 or surface <= 0 or not (1 <= arr <= 20):
+            missing = [f for f, v in [("prix", prix), ("surface", surface)]
+                       if not v] + ([] if 1 <= arr <= 20 else ["arrondissement"])
+            return {
+                "success": False,
+                "error": f"HTML collé — données manquantes : {', '.join(missing)}",
+                "titre": titre, "prix_annonce": prix, "surface": surface,
+                "pieces": pieces, "arrondissement": arr,
+                "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0,
+                "gem_score": 0, "gain_potentiel": 0, "is_hidden_gem": False,
+                "shap_top3": [], "listing_extras": {}, "corrections": {},
+                "photo_url": photo_url,
+            }
+
+        _raw_html = raw_data.pop("_raw", "") or ""
+        _soup_obj = raw_data.pop("_soup", None)
+        try:
+            if _soup_obj is not None:
+                listing_extras = extract_listing_features(_raw_html, _soup_obj)
+                etage_val = listing_extras.get("etage")
+                dpe_val   = listing_extras.get("dpe_classe")
+                reno_val  = listing_extras.get("renovation_score", 0.0)
+                if etage_val is not None:
+                    floor_corr = FLOOR_CORRECTIONS.get(min(etage_val, 5), 1.04)
+                if dpe_val:
+                    dpe_corr = DPE_CORRECTIONS.get(dpe_val, 1.0)
+                reno_corr = 0.95 + reno_val * 0.13
+        except Exception:
+            listing_extras = {}
+
+    # ── Path C: normal scraping (API → HTML) ─────────────────────────
+    else:
+        # Try lightweight API first (avoids heavy HTML fetch)
+        raw_data = None
+        if listing_id and "seloger.com" in url.lower():
+            raw_data = _try_seloger_api(listing_id)
+
+        # Fall back to full HTML scraping
+        if not raw_data:
+            try:
+                domain = url.lower()
+                if "seloger.com" in domain:
+                    raw_data = _scrape_seloger(url)
+                elif "leboncoin.fr" in domain:
+                    raw_data = _scrape_leboncoin(url)
+                elif "pap.fr" in domain:
+                    raw_data = _scrape_pap(url)
+                elif "bienici.com" in domain:
+                    raw_data = _scrape_bienici(url)
+                else:
+                    raw_data = _scrape_seloger(url)
+                    raw_data["source"] = "Inconnu"
+            except requests.exceptions.HTTPError as exc:
+                # IP-based blocking (403/429) → ask user to fill manually
+                return {
+                    "status": "needs_manual_input",
+                    "partial": url_data,
+                    "message": f"Erreur HTTP {exc.response.status_code}",
+                }
+            except Exception:
+                return {
+                    "status": "needs_manual_input",
+                    "partial": url_data,
+                    "message": "Impossible de récupérer la page",
+                }
+
+        prix     = raw_data.get("prix", 0) or 0
+        surface  = raw_data.get("surface", 0.0) or 0.0
+        pieces   = raw_data.get("pieces", 0) or 0
+        arr      = raw_data.get("arrondissement", 0) or url_data.get("arrondissement", 0)
+        titre    = raw_data.get("titre", "") or ""
+        photo_url = raw_data.get("photo_url")
+        source   = raw_data.get("source", "")
+        lat      = raw_data.get("latitude")
+        lon      = raw_data.get("longitude")
+
+        # Incomplete data → ask user to fill the gaps
+        if prix <= 0 or surface <= 0 or not (1 <= arr <= 20):
+            partial = {**url_data}
+            if prix > 0:         partial["prix"] = prix
+            if surface > 0:      partial["surface"] = surface
+            if 1 <= arr <= 20:   partial["arrondissement"] = arr
+            if pieces > 0:       partial["pieces"] = pieces
+            return {
+                "status": "needs_manual_input",
+                "partial": partial,
+                "message": f"Données incomplètes (prix={prix}, surface={surface}m², arr={arr})",
+            }
+
+        # Extract qualitative features (floor, DPE, renovation)
+        _raw_html: str = raw_data.pop("_raw", "") or ""
+        _soup_obj: BeautifulSoup | None = raw_data.pop("_soup", None)
+        try:
+            if _soup_obj is not None or _raw_html:
+                if _soup_obj is None:
+                    _soup_obj = BeautifulSoup(_raw_html, "html.parser")
+                listing_extras = extract_listing_features(_raw_html, _soup_obj)
+                etage_val = listing_extras.get("etage")
+                dpe_val   = listing_extras.get("dpe_classe")
+                reno_val  = listing_extras.get("renovation_score", 0.0)
+                if etage_val is not None:
+                    floor_corr = FLOOR_CORRECTIONS.get(min(etage_val, 5), 1.04)
+                if dpe_val:
+                    dpe_corr = DPE_CORRECTIONS.get(dpe_val, 1.0)
+                reno_corr = 0.95 + reno_val * 0.13
+        except Exception:
+            listing_extras = {}
+
+    # ── Common path: lat/lon → predict → gem score ────────────────────
+
     if not lat or not lon:
-        lat, lon = ARR_CENTROIDS.get(arr, (48.8566, 2.3522))
+        lat, lon = ARR_CENTROIDS.get(arr if 1 <= arr <= 20 else 11, (48.8566, 2.3522))
 
     if pieces <= 0:
         pieces = max(1, round(surface / 25))
 
-    # ── 3b. Extract listing features (floor, DPE, renovation) ────
-    _raw_html: str = raw_data.pop("_raw", "") or ""
-    _soup: BeautifulSoup | None = raw_data.pop("_soup", None)
-    listing_extras: dict = {}
-    floor_corr = dpe_corr = reno_corr = 1.0
+    safe_arr = arr if 1 <= arr <= 20 else 11
 
-    try:
-        if _soup is not None or _raw_html:
-            if _soup is None:
-                _soup = BeautifulSoup(_raw_html, "html.parser")
-            listing_extras = extract_listing_features(_raw_html, _soup)
-
-            etage_val = listing_extras.get("etage")
-            dpe_val   = listing_extras.get("dpe_classe")
-            reno_val  = listing_extras.get("renovation_score", 0.0)
-
-            if etage_val is not None:
-                floor_corr = FLOOR_CORRECTIONS.get(min(etage_val, 5), 1.04)
-            if dpe_val:
-                dpe_corr = DPE_CORRECTIONS.get(dpe_val, 1.0)
-            reno_corr = 0.95 + reno_val * 0.13
-    except Exception:
-        listing_extras = {}
-
-    # ── 4. Predict ────────────────────────────────────────────────
     try:
         prix_m2_lgbm, _, shap_top3 = _predict_and_explain(
             surface=surface, pieces=pieces,
-            arrondissement=arr, latitude=lat, longitude=lon,
+            arrondissement=safe_arr, latitude=lat, longitude=lon,
         )
     except Exception as exc:
         return {
@@ -951,46 +1243,43 @@ def analyze_listing_url(url: str) -> dict:
             "pieces": pieces, "arrondissement": arr,
             "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
             "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {}, "photo_url": raw_data.get("photo_url"),
+            "listing_extras": {}, "corrections": {}, "photo_url": photo_url,
         }
 
-    # ── 4b. Apply listing corrections ────────────────────────────
-    prix_m2 = prix_m2_lgbm * floor_corr * dpe_corr * reno_corr
+    prix_m2    = prix_m2_lgbm * floor_corr * dpe_corr * reno_corr
     prix_total = int(prix_m2 * surface)
 
-    # ── 5. Gem score ─────────────────────────────────────────────
     prix_affiche_m2 = prix / surface
-    # gem_score > 0 = bien sous-évalué (opportunité)
-    gem_score = (prix_m2 - prix_affiche_m2) / prix_m2 if prix_m2 > 0 else 0.0
-    gain_potentiel = max(0, int(prix_total - prix))
+    gem_score       = (prix_m2 - prix_affiche_m2) / prix_m2 if prix_m2 > 0 else 0.0
+    gain_potentiel  = max(0, int(prix_total - prix))
 
     return {
-        "success":            True,
-        "source":             raw_data.get("source", ""),
-        "titre":              titre,
-        "prix_annonce":       int(prix),
-        "surface":            float(surface),
-        "pieces":             int(pieces),
-        "arrondissement":     int(arr),
-        "latitude":           float(lat),
-        "longitude":          float(lon),
-        "prix_affiche_m2":    int(prix_affiche_m2),
+        "success":             True,
+        "source":              source,
+        "titre":               titre,
+        "prix_annonce":        int(prix),
+        "surface":             float(surface),
+        "pieces":              int(pieces),
+        "arrondissement":      int(safe_arr),
+        "latitude":            float(lat),
+        "longitude":           float(lon),
+        "prix_affiche_m2":     int(prix_affiche_m2),
         "prix_predit_m2_brut": round(prix_m2_lgbm, 0),
-        "prix_predit_m2":     round(prix_m2, 0),
-        "prix_predit_total":  prix_total,
-        "gem_score":          round(gem_score, 4),
-        "gain_potentiel":     gain_potentiel,
-        "is_hidden_gem":      gem_score > 0.08,
-        "shap_top3":          shap_top3,
-        "listing_extras":     listing_extras,
+        "prix_predit_m2":      round(prix_m2, 0),
+        "prix_predit_total":   prix_total,
+        "gem_score":           round(gem_score, 4),
+        "gain_potentiel":      gain_potentiel,
+        "is_hidden_gem":       gem_score > 0.08,
+        "shap_top3":           shap_top3,
+        "listing_extras":      listing_extras,
         "corrections": {
             "floor_corr": round(floor_corr, 4),
             "dpe_corr":   round(dpe_corr, 4),
             "reno_corr":  round(reno_corr, 4),
             "total_corr": round(floor_corr * dpe_corr * reno_corr, 4),
         },
-        "photo_url":          raw_data.get("photo_url"),
-        "error": None,
+        "photo_url": photo_url,
+        "error":     None,
     }
 
 

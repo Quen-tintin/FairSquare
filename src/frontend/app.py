@@ -768,6 +768,12 @@ elif page == "🔗 Analyser une URL":
         unsafe_allow_html=True,
     )
 
+    # ── Session state for multi-step flow ─────────────────────────
+    if "url_manual_state" not in st.session_state:
+        st.session_state.url_manual_state = None   # {"partial": dict, "url": str}
+    if "url_result" not in st.session_state:
+        st.session_state.url_result = None
+
     url_input = st.text_input(
         "URL de l'annonce",
         placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
@@ -777,29 +783,134 @@ elif page == "🔗 Analyser une URL":
     analyse_btn = st.button("Analyser", use_container_width=False)
 
     if analyse_btn and url_input.strip():
-        with st.spinner("Scraping + prédiction en cours…"):
+        # Reset any previous state
+        st.session_state.url_manual_state = None
+        st.session_state.url_result = None
+        with st.spinner("Analyse en cours…"):
             try:
                 from src.frontend.url_analyzer import analyze_listing_url
-                result = analyze_listing_url(url_input.strip())
+                _r = analyze_listing_url(url_input.strip())
             except Exception as exc:
-                result = {
-                    "success": False,
-                    "error": str(exc),
+                _r = {
+                    "success": False, "error": str(exc),
                     "titre": "", "prix_annonce": 0, "surface": 0,
                     "pieces": 0, "arrondissement": 0,
                     "prix_predit_m2": 0, "prix_predit_total": 0,
                     "gem_score": 0, "gain_potentiel": 0,
                     "is_hidden_gem": False, "shap_top3": [],
                 }
+        if _r.get("status") == "needs_manual_input":
+            st.session_state.url_manual_state = {
+                "partial": _r.get("partial", {}),
+                "url": url_input.strip(),
+            }
+        else:
+            st.session_state.url_result = _r
 
-        if not result["success"]:
-            st.error(f"**Scraping échoué** — {result['error']}")
-            st.info(
-                "**Pourquoi ça échoue ?** Les sites immobiliers utilisent du JavaScript dynamique "
-                "et des protections anti-bot. SeLoger, LeBonCoin et BienIci bloquent souvent les "
-                "requêtes automatisées. Utilisez la page **Analyse d'annonce** pour saisir manuellement les données.",
-                icon="💡",
+    elif analyse_btn and not url_input.strip():
+        st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
+
+    # ── Manual input form (shown when scraping is blocked) ────────
+    if st.session_state.url_manual_state is not None:
+        _partial = st.session_state.url_manual_state["partial"]
+        _saved_url = st.session_state.url_manual_state["url"]
+
+        st.warning(
+            "🔒 **SeLoger protège ses annonces** — complétez les 3 champs ci-dessous "
+            "depuis la page de l'annonce (30 secondes).",
+        )
+
+        _default_arr = _partial.get("arrondissement", 11)
+        if not (1 <= _default_arr <= 20):
+            _default_arr = 11
+
+        _mc1, _mc2, _mc3 = st.columns(3)
+        with _mc1:
+            _prix_manual = st.number_input(
+                "Prix affiché (€)", min_value=50_000, max_value=5_000_000,
+                value=400_000, step=5_000, format="%d",
             )
+        with _mc2:
+            _surface_manual = st.number_input(
+                "Surface (m²)", min_value=10.0, max_value=500.0,
+                value=50.0, step=1.0,
+            )
+        with _mc3:
+            _pieces_manual = st.number_input(
+                "Pièces", min_value=1, max_value=10, value=3,
+            )
+
+        _arr_manual = st.selectbox(
+            "Arrondissement",
+            list(range(1, 21)),
+            index=_default_arr - 1,
+            format_func=lambda x: f"Paris {x}{'er' if x == 1 else 'e'}",
+        )
+
+        if st.button("🔍 Analyser avec ces données", type="primary"):
+            with st.spinner("Calcul en cours…"):
+                try:
+                    from src.frontend.url_analyzer import analyze_listing_url
+                    _r2 = analyze_listing_url(
+                        _saved_url,
+                        manual_overrides={
+                            "prix": _prix_manual,
+                            "surface": float(_surface_manual),
+                            "pieces": _pieces_manual,
+                            "arrondissement": _arr_manual,
+                        },
+                    )
+                except Exception as exc:
+                    _r2 = {
+                        "success": False, "error": str(exc),
+                        "titre": "", "prix_annonce": 0, "surface": 0,
+                        "pieces": 0, "arrondissement": 0,
+                        "prix_predit_m2": 0, "prix_predit_total": 0,
+                        "gem_score": 0, "gain_potentiel": 0,
+                        "is_hidden_gem": False, "shap_top3": [],
+                    }
+            st.session_state.url_manual_state = None
+            st.session_state.url_result = _r2
+            st.rerun()
+
+        with st.expander("Mode avancé — coller le contenu de la page"):
+            st.caption(
+                "Allez sur l'annonce, faites clic droit → **Afficher la source de la page** "
+                "(ou Ctrl+U), sélectionnez tout (Ctrl+A), copiez et collez ici."
+            )
+            _pasted = st.text_area(
+                "Source HTML de l'annonce",
+                height=160,
+                placeholder="<!DOCTYPE html>...",
+                label_visibility="visible",
+            )
+            if st.button("Analyser depuis le contenu collé"):
+                if _pasted.strip():
+                    with st.spinner("Analyse du contenu collé…"):
+                        try:
+                            from src.frontend.url_analyzer import analyze_listing_url
+                            _r3 = analyze_listing_url(_saved_url, pasted_html=_pasted)
+                        except Exception as exc:
+                            _r3 = {
+                                "success": False, "error": str(exc),
+                                "titre": "", "prix_annonce": 0, "surface": 0,
+                                "pieces": 0, "arrondissement": 0,
+                                "prix_predit_m2": 0, "prix_predit_total": 0,
+                                "gem_score": 0, "gain_potentiel": 0,
+                                "is_hidden_gem": False, "shap_top3": [],
+                            }
+                    st.session_state.url_manual_state = None
+                    st.session_state.url_result = _r3
+                    st.rerun()
+                else:
+                    st.warning("Collez d'abord le code source HTML.")
+
+    # ── Result display ────────────────────────────────────────────
+    if st.session_state.url_result is not None:
+        result = st.session_state.url_result
+
+        if not result.get("success"):
+            st.error(f"**Analyse échouée** — {result.get('error', 'Erreur inconnue')}")
         else:
             # ── Badge ──────────────────────────────────────────────
             gem_score_pct = result["gem_score"] * 100
@@ -1004,9 +1115,6 @@ elif page == "🔗 Analyser une URL":
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-    elif not url_input.strip() and analyse_btn:
-        st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
-
     # ── Aide ──────────────────────────────────────────────────────
     with st.expander("Sources supportées & limitations"):
         st.markdown("""
@@ -1017,8 +1125,8 @@ elif page == "🔗 Analyser une URL":
 - **BienIci** : extraction `__NEXT_DATA__` + meta tags
 
 **Limitations**
-Les sites immobiliers bloquent souvent les requêtes automatisées (anti-bot, JavaScript dynamique).
-Si le scraping échoue, utilisez la page **Analyse d'annonce** pour saisir manuellement prix, surface et arrondissement.
+SeLoger bloque les requêtes depuis certaines adresses IP (hébergeurs cloud).
+En cas de blocage, FairSquare affiche un formulaire pré-rempli (arrondissement extrait de l'URL) — il suffit de saisir le prix et la surface depuis l'annonce.
 
 **Calcul du Gem Score**
 `gem_score = (prix_prédit/m² − prix_affiché/m²) / prix_prédit/m²`
