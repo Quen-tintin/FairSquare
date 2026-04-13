@@ -441,12 +441,52 @@ def price_card(label: str, price: int, price_m2: int,
     )
 
 
+<<<<<<< HEAD
 @st.cache_data(show_spinner="Gemini Vision…")
 def _run_vision(url: str) -> dict:
     """Score a property photo via Gemini Vision. Lazy-imports RenovationScorer."""
     from src.vision.renovation_scorer import RenovationScorer
     return RenovationScorer().score_from_url(url).to_dict()
 
+=======
+# ── Bookmarklet query-param ingestion ────────────────────────────────
+# When the user clicks the bookmarklet on a SeLoger/LeBonCoin page,
+# the JS extracts listing data and opens FairSquare with ?bm=1&prix=…
+# We capture those params here (once), store them in session state,
+# clear the URL, and rerun so the URL analyzer page auto-fires.
+_qp = st.query_params
+if _qp.get("bm") == "1":
+    _bm_prix    = int(_qp.get("prix", 0) or 0)
+    _bm_surface = float(_qp.get("surface", 0) or 0)
+    _bm_arr     = int(_qp.get("arr", 0) or 0)
+    _bm_pieces  = int(_qp.get("pieces", 3) or 3)
+    _bm_url     = _qp.get("url", "")
+    _bm_titre   = _qp.get("titre", "")
+    _bm_photo   = _qp.get("photo", "")
+
+    if _bm_prix > 0 and _bm_surface > 0:
+        # Full data extracted — queue auto-analysis
+        st.session_state.url_result = None
+        st.session_state.url_manual_state = None
+        st.session_state.bm_data = {
+            "prix": _bm_prix, "surface": _bm_surface,
+            "pieces": _bm_pieces,
+            "arr": _bm_arr if 1 <= _bm_arr <= 20 else 11,
+            "url": _bm_url, "titre": _bm_titre, "photo": _bm_photo,
+        }
+    else:
+        # Partial extraction — pre-fill manual form
+        st.session_state.url_result = None
+        st.session_state.url_manual_state = {
+            "partial": {"arrondissement": _bm_arr if 1 <= _bm_arr <= 20 else 11},
+            "url": _bm_url,
+        }
+
+    # Force navigation to URL analyzer page
+    st.session_state["_nav"] = "🔗 Analyser une URL"
+    st.query_params.clear()
+    st.rerun()
+>>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
 
 # ── Sidebar ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -491,6 +531,7 @@ with st.sidebar:
             "🗺️ Explorer DVF",
         ],
         label_visibility="collapsed",
+        key="_nav",
     )
 
     st.divider()
@@ -802,6 +843,7 @@ elif page == "🔗 Analyser une URL":
         unsafe_allow_html=True,
     )
 
+<<<<<<< HEAD
     _url_col, _btn_col = st.columns([5, 1])
     with _url_col:
         url_input = st.text_input(
@@ -828,8 +870,74 @@ elif page == "🔗 Analyser une URL":
                     "prix_predit_total": 0, "gem_score": 0, "gain_potentiel": 0,
                     "is_hidden_gem": False, "shap_top3": [], "listing_extras": {},
                     "corrections": {}, "photo_url": None,
-                }
+=======
+    # ── Session state for multi-step flow ─────────────────────────
+    if "url_manual_state" not in st.session_state:
+        st.session_state.url_manual_state = None   # {"partial": dict, "url": str}
+    if "url_result" not in st.session_state:
+        st.session_state.url_result = None
 
+    # ── Auto-analysis from bookmarklet ────────────────────────────
+    if "bm_data" in st.session_state:
+        _bm = st.session_state.pop("bm_data")
+        with st.spinner("Analyse de l'annonce en cours…"):
+            try:
+                from src.frontend.url_analyzer import analyze_listing_url
+                _bm_result = analyze_listing_url(
+                    _bm["url"],
+                    manual_overrides={
+                        "prix":          _bm["prix"],
+                        "surface":       _bm["surface"],
+                        "pieces":        _bm["pieces"],
+                        "arrondissement": _bm["arr"],
+                    },
+                )
+                # Inject titre and photo from bookmarklet (scraping was skipped)
+                if _bm_result.get("success"):
+                    if not _bm_result.get("titre") and _bm.get("titre"):
+                        _bm_result["titre"] = _bm["titre"]
+                    if not _bm_result.get("photo_url") and _bm.get("photo"):
+                        _bm_result["photo_url"] = _bm["photo"]
+                    _bm_result["source"] = "SeLoger (bookmarklet)"
+            except Exception as exc:
+                _bm_result = {"success": False, "error": str(exc)}
+        st.session_state.url_result = _bm_result
+
+    url_input = st.text_input(
+        "URL de l'annonce",
+        placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
+        label_visibility="visible",
+    )
+
+    analyse_btn = st.button("Analyser", use_container_width=False)
+
+    if analyse_btn and url_input.strip():
+        # Reset any previous state
+        st.session_state.url_manual_state = None
+        st.session_state.url_result = None
+        with st.spinner("Analyse en cours…"):
+            try:
+                from src.frontend.url_analyzer import analyze_listing_url
+                _r = analyze_listing_url(url_input.strip())
+            except Exception as exc:
+                _r = {
+                    "success": False, "error": str(exc),
+                    "titre": "", "prix_annonce": 0, "surface": 0,
+                    "pieces": 0, "arrondissement": 0,
+                    "prix_predit_m2": 0, "prix_predit_total": 0,
+                    "gem_score": 0, "gain_potentiel": 0,
+                    "is_hidden_gem": False, "shap_top3": [],
+>>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
+                }
+        if _r.get("status") == "needs_manual_input":
+            st.session_state.url_manual_state = {
+                "partial": _r.get("partial", {}),
+                "url": url_input.strip(),
+            }
+        else:
+            st.session_state.url_result = _r
+
+<<<<<<< HEAD
         # Step 2 — Gemini Vision on listing photo
         _r = st.session_state.url_result
         if _r and _r.get("success") and _r.get("photo_url"):
@@ -877,6 +985,112 @@ elif page == "🔗 Analyser une URL":
             _badge_bg    = "linear-gradient(135deg,#ef4444,#dc2626)"
             _badge_color = "#fff"
             _badge_text  = f"⚠️ SURCOTÉ · +{abs(_gsc):.1f}% AU-DESSUS DU MARCHÉ"
+=======
+    elif analyse_btn and not url_input.strip():
+        st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
+
+    # ── Manual input form (shown when scraping is blocked) ────────
+    if st.session_state.url_manual_state is not None:
+        _partial = st.session_state.url_manual_state["partial"]
+        _saved_url = st.session_state.url_manual_state["url"]
+
+        st.warning(
+            "🔒 **SeLoger protège ses annonces** — complétez les 3 champs ci-dessous "
+            "depuis la page de l'annonce (30 secondes).",
+        )
+
+        _default_arr = _partial.get("arrondissement", 11)
+        if not (1 <= _default_arr <= 20):
+            _default_arr = 11
+
+        _mc1, _mc2, _mc3 = st.columns(3)
+        with _mc1:
+            _prix_manual = st.number_input(
+                "Prix affiché (€)", min_value=50_000, max_value=5_000_000,
+                value=400_000, step=5_000, format="%d",
+            )
+        with _mc2:
+            _surface_manual = st.number_input(
+                "Surface (m²)", min_value=10.0, max_value=500.0,
+                value=50.0, step=1.0,
+            )
+        with _mc3:
+            _pieces_manual = st.number_input(
+                "Pièces", min_value=1, max_value=10, value=3,
+            )
+
+        _arr_manual = st.selectbox(
+            "Arrondissement",
+            list(range(1, 21)),
+            index=_default_arr - 1,
+            format_func=lambda x: f"Paris {x}{'er' if x == 1 else 'e'}",
+        )
+
+        if st.button("🔍 Analyser avec ces données", type="primary"):
+            with st.spinner("Calcul en cours…"):
+                try:
+                    from src.frontend.url_analyzer import analyze_listing_url
+                    _r2 = analyze_listing_url(
+                        _saved_url,
+                        manual_overrides={
+                            "prix": _prix_manual,
+                            "surface": float(_surface_manual),
+                            "pieces": _pieces_manual,
+                            "arrondissement": _arr_manual,
+                        },
+                    )
+                except Exception as exc:
+                    _r2 = {
+                        "success": False, "error": str(exc),
+                        "titre": "", "prix_annonce": 0, "surface": 0,
+                        "pieces": 0, "arrondissement": 0,
+                        "prix_predit_m2": 0, "prix_predit_total": 0,
+                        "gem_score": 0, "gain_potentiel": 0,
+                        "is_hidden_gem": False, "shap_top3": [],
+                    }
+            st.session_state.url_manual_state = None
+            st.session_state.url_result = _r2
+            st.rerun()
+
+        with st.expander("Mode avancé — coller le contenu de la page"):
+            st.caption(
+                "Allez sur l'annonce, faites clic droit → **Afficher la source de la page** "
+                "(ou Ctrl+U), sélectionnez tout (Ctrl+A), copiez et collez ici."
+            )
+            _pasted = st.text_area(
+                "Source HTML de l'annonce",
+                height=160,
+                placeholder="<!DOCTYPE html>...",
+                label_visibility="visible",
+            )
+            if st.button("Analyser depuis le contenu collé"):
+                if _pasted.strip():
+                    with st.spinner("Analyse du contenu collé…"):
+                        try:
+                            from src.frontend.url_analyzer import analyze_listing_url
+                            _r3 = analyze_listing_url(_saved_url, pasted_html=_pasted)
+                        except Exception as exc:
+                            _r3 = {
+                                "success": False, "error": str(exc),
+                                "titre": "", "prix_annonce": 0, "surface": 0,
+                                "pieces": 0, "arrondissement": 0,
+                                "prix_predit_m2": 0, "prix_predit_total": 0,
+                                "gem_score": 0, "gain_potentiel": 0,
+                                "is_hidden_gem": False, "shap_top3": [],
+                            }
+                    st.session_state.url_manual_state = None
+                    st.session_state.url_result = _r3
+                    st.rerun()
+                else:
+                    st.warning("Collez d'abord le code source HTML.")
+
+    # ── Result display ────────────────────────────────────────────
+    if st.session_state.url_result is not None:
+        result = st.session_state.url_result
+
+        if not result.get("success"):
+            st.error(f"**Analyse échouée** — {result.get('error', 'Erreur inconnue')}")
+>>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
         else:
             _badge_bg    = "#1E2D45"
             _badge_color = "#8899BB"
@@ -1189,6 +1403,7 @@ elif page == "🔗 Analyser une URL":
             _cc3.metric("Rénovation", _pct_delta(_corr2.get("reno_corr",  1.0)))
             _cc4.metric("Total ×",    _pct_delta(_corr2.get("total_corr", 1.0)))
 
+<<<<<<< HEAD
         # ── Carte ──────────────────────────────────────────────────
         _rlat = _res.get("latitude", 0.0)
         _rlon = _res.get("longitude", 0.0)
@@ -1200,6 +1415,115 @@ elif page == "🔗 Analyser une URL":
                 "label": _res.get("titre", ""), "prix": _res["prix_annonce"],
             }])
             st.map(_map_df, latitude="lat", longitude="lon", zoom=15, size=50)
+=======
+                if result["shap_top3"]:
+                    st.markdown("#### Facteurs clés (SHAP)")
+                    for s in result["shap_top3"]:
+                        impact  = s["impact"]
+                        color   = "#00D4AA" if impact > 0 else "#ef4444"
+                        sign    = "+" if impact > 0 else ""
+                        bar_pct = min(100, int(abs(impact) / max(abs(s2["impact"]) for s2 in result["shap_top3"]) * 100))
+                        st.markdown(
+                            f'<div style="background:#131929;border:1px solid #1E2D45;'
+                            f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
+                            f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+                            f'<span style="color:#C4D0E8;font-size:0.9em">{s["feature"]}</span>'
+                            f'<span style="color:{color};font-weight:700">{sign}{impact:,} €/m²</span>'
+                            f'</div>'
+                            f'<div style="background:#0A0E1A;border-radius:4px;height:4px">'
+                            f'<div style="background:{color};width:{bar_pct}%;height:4px;border-radius:4px"></div>'
+                            f'</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.markdown("#### Comparaison prix")
+                    fig_cmp = {
+                        "Affiché":  result["prix_annonce"],
+                        "FairSquare": result["prix_predit_total"],
+                    }
+                    import plotly.graph_objects as _go
+                    fig = _go.Figure(_go.Bar(
+                        x=list(fig_cmp.keys()),
+                        y=list(fig_cmp.values()),
+                        marker_color=["#4A5568", "#00D4AA"],
+                    ))
+                    fig.update_layout(
+                        paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
+                        font=dict(color="#C4D0E8"),
+                        yaxis=dict(gridcolor="#1E2D45", tickformat=","),
+                        showlegend=False, height=260,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Bookmarklet install ───────────────────────────────────────
+    with st.expander("🔖 Analyser en 1 clic depuis SeLoger (bookmarklet)"):
+        st.markdown(
+            "**Installation** — glissez le bouton ci-dessous dans votre barre de favoris :"
+        )
+
+        # The bookmarklet JS — __URL__ is replaced at runtime by the app's own origin
+        _BM_TEMPLATE = r"""javascript:(function(){var prix=0,surface=0,pieces=0,arr=0,titre='',photo='';[].slice.call(document.querySelectorAll('script[type="application/ld+json"]')).forEach(function(s){try{var d=JSON.parse(s.textContent);if(Array.isArray(d))d=d[0];if(d&&['Apartment','House','RealEstateListing','Product'].indexOf(d['@type'])>-1){if(!titre)titre=d.name||'';if(!prix&&d.offers){var o=Array.isArray(d.offers)?d.offers[0]:d.offers;prix=parseInt((o&&o.price)||0);}if(!surface&&d.floorSize){var fs=d.floorSize;surface=parseFloat((typeof fs=='object'?fs.value:fs)||0);}if(!pieces&&d.numberOfRooms)pieces=parseInt(d.numberOfRooms||0);if(!arr&&d.address&&d.address.postalCode){var c=parseInt(d.address.postalCode);if(c>75000&&c<75021)arr=c%100;}}}catch(e){}});try{var nd=document.getElementById('__NEXT_DATA__');if(nd){var n=JSON.parse(nd.textContent),ad=(((n.props||{}).pageProps)||{}).ad||{};if(!titre)titre=ad.subject||'';if(!prix){var p=ad.price;prix=parseInt((Array.isArray(p)?p[0]:p)||0);}var at={};(ad.attributes||[]).forEach(function(a){at[a.key]=a.value_label||a.value;});if(!surface)surface=parseFloat(at.square||0);if(!pieces)pieces=parseInt(at.rooms||0);if(!arr&&ad.location&&ad.location.zipcode){var z=parseInt(ad.location.zipcode);if(z>75000&&z<75021)arr=z%100;}}}catch(e){}var og=document.querySelector('meta[property="og:title"]');var ot=(og&&og.content)||'';if(!titre)titre=ot||document.title;if(!prix){var t=titre.replace(/[\s\xa0]/g,'');var m=t.match(/(\d{5,7})\u20ac/);if(m)prix=parseInt(m[1]);}if(!surface){var m=titre.match(/(\d+[.,]?\d*)\s*m[²2]/);if(m)surface=parseFloat(m[1].replace(',','.'));}if(!pieces&&ot){var m=ot.match(/[TF](\d)/);if(m)pieces=parseInt(m[1]);}if(!(arr>=1&&arr<=20)){var m=decodeURIComponent(location.href).match(/paris-(\d{1,2})(?:er|e|eme|\u00e8me)?-75/i);if(m)arr=parseInt(m[1]);}var img=document.querySelector('meta[property="og:image"]');if(img&&img.content)photo=img.content;var base='__URL__';var p=new URLSearchParams({bm:'1',url:location.href,prix:prix,surface:surface,pieces:pieces||3,arr:arr||0,titre:titre.substring(0,120),photo:photo.substring(0,300)});if(!prix||!surface)alert('FairSquare\nprix='+prix+'\u20ac  surface='+surface+'m\u00b2  arr='+arr+'e\n\nDes champs sont manquants \u2014 compl\u00e9tez-les dans l\'app.');window.open(base+'?'+p.toString(),'_blank');})();"""
+
+        import streamlit.components.v1 as _components
+        _components.html(
+            f"""
+            <style>
+              #bm-link {{
+                display:inline-block;
+                background:linear-gradient(135deg,#00D4AA,#0095FF);
+                color:#0A0E1A !important;
+                font-weight:800;
+                font-size:0.95em;
+                padding:9px 22px;
+                border-radius:20px;
+                text-decoration:none;
+                letter-spacing:0.5px;
+                cursor:grab;
+                user-select:none;
+              }}
+              #bm-link:hover {{ opacity:0.85; }}
+              p {{ color:#8899BB; font-family:sans-serif; font-size:0.82em; margin-top:8px; }}
+            </style>
+            <a id="bm-link" href="#">🔖 FairSquare — Analyser</a>
+            <p>⬆ Glissez ce bouton dans votre barre de favoris (ou clic droit → Ajouter aux favoris)</p>
+            <script>
+              var base = window.parent.location.origin;
+              var bm = {json.dumps(_BM_TEMPLATE)}.replace('__URL__', base);
+              document.getElementById('bm-link').href = bm;
+            </script>
+            """,
+            height=80,
+        )
+
+        st.markdown("""
+**Utilisation**
+1. Ouvrez n'importe quelle annonce SeLoger ou LeBonCoin
+2. Cliquez le favori **FairSquare — Analyser**
+3. FairSquare s'ouvre automatiquement avec l'analyse — zéro saisie
+
+**Ce que le bookmarklet extrait** depuis la page déjà chargée dans votre navigateur :
+prix · surface · pièces · arrondissement · titre · photo
+""")
+
+    # ── Aide ──────────────────────────────────────────────────────
+    with st.expander("Sources supportées & limitations"):
+        st.markdown("""
+**Sources supportées**
+- **SeLoger** : extraction JSON-LD + meta tags
+- **LeBonCoin** : extraction `__NEXT_DATA__`
+- **PAP** : extraction JSON-LD + HTML
+- **BienIci** : extraction `__NEXT_DATA__` + meta tags
+
+**Limitations**
+SeLoger bloque les requêtes depuis certaines adresses IP (hébergeurs cloud).
+En cas de blocage, FairSquare affiche un formulaire pré-rempli (arrondissement extrait de l'URL) — il suffit de saisir le prix et la surface depuis l'annonce.
+
+**Calcul du Gem Score**
+`gem_score = (prix_prédit/m² − prix_affiché/m²) / prix_prédit/m²`
+- `> 8%` → Hidden Gem (sous-évalué)
+- `< 0%` → Surcoté (au-dessus du marché)
+""")
+>>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
 
 
 # ════════════════════════════════════════════════════════════════════
