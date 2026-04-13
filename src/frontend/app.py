@@ -11,6 +11,13 @@ import os
 import sys
 from pathlib import Path
 
+# ── Load .env (python-dotenv) ─────────────────────────────────────────
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).parent.parent.parent / ".env", override=False)
+except ImportError:
+    pass
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -1074,6 +1081,125 @@ elif page == "🔗 Analyser une URL":
                         f'</div></div>',
                         unsafe_allow_html=True,
                     )
+
+        # ── Évaluation du prix (style PAGE 1) ──────────────────────
+        st.divider()
+        st.markdown(
+            '<div style="color:#8899BB;font-size:0.7em;font-weight:600;text-transform:uppercase;'
+            'letter-spacing:1.2px;margin-bottom:12px">💰 ÉVALUATION DU PRIX</div>',
+            unsafe_allow_html=True,
+        )
+        _pcard1, _pcard2 = st.columns(2)
+        with _pcard1:
+            st.markdown(
+                price_card(
+                    "PRIX AFFICHÉ",
+                    _res["prix_annonce"], _res["prix_affiche_m2"],
+                    border_color="#EF444455", bg="#1A0F0F",
+                    text_color="#FCA5A5",
+                ),
+                unsafe_allow_html=True,
+            )
+        with _pcard2:
+            st.markdown(
+                price_card(
+                    "VALEUR ESTIMÉE FAIRSQUARE",
+                    _res["prix_predit_total"], int(_res["prix_predit_m2"]),
+                    border_color="#00D4AA88", bg="#0D1F1A",
+                    text_color="#00D4AA",
+                ),
+                unsafe_allow_html=True,
+            )
+        _gain_k   = _res["gain_potentiel"] // 1000
+        _gain_pct = _res["gem_score"] * 100
+        if _res["is_hidden_gem"] and _res["gain_potentiel"] > 0:
+            st.markdown(
+                f'<div style="background:linear-gradient(135deg,#00D4AA15,#0095FF15);'
+                f'border:1px solid #00D4AA44;border-radius:10px;padding:14px 20px;margin-top:10px;'
+                f'text-align:center">'
+                f'<span style="color:#00D4AA;font-weight:800;font-size:1.15em">'
+                f'↑ GAIN POTENTIEL +{_gain_k}k€</span>'
+                f'<span style="color:#8899BB;font-size:0.87em;margin-left:10px">'
+                f'({_gain_pct:.1f}% de décote)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── SHAP waterfall ─────────────────────────────────────────
+        if _res.get("shap_top3"):
+            st.divider()
+            st.markdown(
+                '<div style="background:#131929;border:1px solid #1E2D45;border-radius:10px;'
+                'padding:8px 14px;margin-bottom:6px">'
+                '<span style="color:#8899BB;font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px">'
+                '🧠 POURQUOI CE PRIX ? — Contributions SHAP (€/m²)</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            _wf_items    = _res["shap_top3"]
+            _wf_base     = _res["prix_predit_m2"] - sum(s["impact"] for s in _wf_items)
+            _wf_labels   = ["Base marché Paris"] + [s["feature"] for s in _wf_items]
+            _wf_values   = [_wf_base] + [s["impact"] for s in _wf_items]
+            _wf_measures = ["absolute"] + ["relative"] * len(_wf_items)
+            _fig_wf = go.Figure(go.Waterfall(
+                orientation="h",
+                measure=_wf_measures,
+                y=_wf_labels,
+                x=_wf_values,
+                connector={"mode": "between", "line": {"width": 1, "color": "#1E2D45"}},
+                increasing={"marker": {"color": "#00D4AA"}},
+                decreasing={"marker": {"color": "#EF4444"}},
+                totals={"marker":    {"color": "#0095FF"}},
+                text=[
+                    f"{v:+,.0f} €/m²" if i > 0 else f"{v:,.0f} €/m²"
+                    for i, v in enumerate(_wf_values)
+                ],
+                textposition="outside",
+                textfont={"color": "#F0F4FF"},
+            ))
+            _fig_wf.update_layout(
+                height=220,
+                margin=dict(l=200, r=100, t=20, b=10),
+                showlegend=False,
+                paper_bgcolor="#0A0E1A",
+                plot_bgcolor="#131929",
+                font=dict(color="#C4D0E8"),
+                xaxis=dict(gridcolor="#1E2D45", showgrid=True, color="#8899BB"),
+                yaxis=dict(autorange="reversed", color="#C4D0E8"),
+            )
+            st.plotly_chart(_fig_wf, use_container_width=True)
+
+        # ── Corrections étage / DPE / rénovation ───────────────────
+        _corr2 = _res.get("corrections", {})
+        if _corr2 and abs(_corr2.get("total_corr", 1.0) - 1.0) > 0.005:
+            st.divider()
+            st.markdown(
+                '<div style="color:#8899BB;font-size:0.7em;text-transform:uppercase;'
+                'letter-spacing:1px;margin-bottom:10px">⚙️ CORRECTIONS APPLIQUÉES AU PRIX BRUT LIGHTGBM</div>',
+                unsafe_allow_html=True,
+            )
+            _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+
+            def _pct_delta(v: float) -> str:
+                p = (v - 1.0) * 100
+                return f"{'+' if p >= 0 else ''}{p:.1f}%"
+
+            _cc1.metric("Étage",      _pct_delta(_corr2.get("floor_corr", 1.0)))
+            _cc2.metric("DPE",        _pct_delta(_corr2.get("dpe_corr",   1.0)))
+            _cc3.metric("Rénovation", _pct_delta(_corr2.get("reno_corr",  1.0)))
+            _cc4.metric("Total ×",    _pct_delta(_corr2.get("total_corr", 1.0)))
+
+        # ── Carte ──────────────────────────────────────────────────
+        _rlat = _res.get("latitude", 0.0)
+        _rlon = _res.get("longitude", 0.0)
+        if _rlat and _rlon and abs(_rlat) > 0.001 and abs(_rlon) > 0.001:
+            st.divider()
+            st.markdown("#### 🗺️ Localisation")
+            _map_df = pd.DataFrame([{
+                "lat": _rlat, "lon": _rlon,
+                "label": _res.get("titre", ""), "prix": _res["prix_annonce"],
+            }])
+            st.map(_map_df, latitude="lat", longitude="lon", zoom=15, size=50)
 
 
 # ════════════════════════════════════════════════════════════════════
