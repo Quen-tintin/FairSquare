@@ -15,6 +15,12 @@ Features produites par point :
   - transit_count_500m    : nombre de stations dans 500 m
   - park_area_500m_m2     : surface totale de parcs dans 500 m (m²)
   - walkability_score     : score composite 0–100
+  - dist_centre_paris_km  : distance au Châtelet (km) — pas d'API
+  - commerce_count_300m   : restaurants, bars, cafés, boulangeries dans 300 m
+  - transport_count_300m  : tous arrêts de transport dans 300 m
+  - school_count_500m     : écoles dans 500 m
+  - dist_nuisance_m       : distance à la nuisance la plus proche (station-service, etc.)
+  - heritage_count_500m   : monuments / sites historiques dans 500 m
 
 Usage:
     extractor = OSMFeatureExtractor()
@@ -41,6 +47,10 @@ _COURTESY_DELAY = 5.0   # secondes entre points (politique Overpass)
 
 _DEFAULT_RADIUS = 1_000  # mètres
 
+# Châtelet — centre géographique de Paris pour dist_centre_paris_km
+_CHATELET_LAT = 48.8566
+_CHATELET_LON = 2.3471
+
 
 # ------------------------------------------------------------------ #
 #  Structure de données                                                #
@@ -57,6 +67,13 @@ class OSMFeatures:
     transit_count_500m: int = 0
     park_area_500m_m2: float = 0.0
     walkability_score: float | None = None
+    # v2 features
+    dist_centre_paris_km: float = 0.0
+    commerce_count_300m: int = 0
+    transport_count_300m: int = 0
+    school_count_500m: int = 0
+    dist_nuisance_m: float | None = None
+    heritage_count_500m: int = 0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +87,12 @@ class OSMFeatures:
             "transit_count_500m": self.transit_count_500m,
             "park_area_500m_m2": self.park_area_500m_m2,
             "walkability_score": self.walkability_score,
+            "dist_centre_paris_km": self.dist_centre_paris_km,
+            "commerce_count_300m": self.commerce_count_300m,
+            "transport_count_300m": self.transport_count_300m,
+            "school_count_500m": self.school_count_500m,
+            "dist_nuisance_m": self.dist_nuisance_m,
+            "heritage_count_500m": self.heritage_count_500m,
         }
 
 
@@ -98,6 +121,12 @@ class OSMFeatureExtractor:
         Calcule toutes les features OSM en une seule requête Overpass.
         """
         features = OSMFeatures(lat=lat, lon=lon)
+
+        # Distance to Châtelet — no API call needed
+        features.dist_centre_paris_km = round(
+            _haversine(lat, lon, _CHATELET_LAT, _CHATELET_LON) / 1000, 3
+        )
+
         elements = self._fetch_all_pois(lat, lon, features)
 
         if elements:
@@ -144,6 +173,11 @@ class OSMFeatureExtractor:
           node["amenity"~"school|college|university"](around:{r},{lat},{lon});
           way["amenity"~"school|college|university"](around:{r},{lat},{lon});
           node["shop"~"supermarket|convenience|grocery"](around:{r},{lat},{lon});
+          node["amenity"~"restaurant|bar|cafe"](around:300,{lat},{lon});
+          node["shop"~"bakery|pastry"](around:300,{lat},{lon});
+          node["historic"](around:500,{lat},{lon});
+          way["historic"](around:500,{lat},{lon});
+          node["amenity"="fuel"](around:{r},{lat},{lon});
         );
         out center;
         """
@@ -170,10 +204,12 @@ class OSMFeatureExtractor:
         park_elements: list[dict] = []
         school_nodes: list[dict] = []
         market_nodes: list[dict] = []
+        commerce_nodes: list[dict] = []
+        heritage_nodes: list[dict] = []
+        nuisance_nodes: list[dict] = []
 
         for e in elements:
             tags = e.get("tags", {})
-            etype = e.get("type", "")
 
             is_transit = (
                 tags.get("railway") in ("station", "subway_entrance")
@@ -184,6 +220,12 @@ class OSMFeatureExtractor:
             is_park = tags.get("leisure") == "park"
             is_school = tags.get("amenity") in ("school", "college", "university")
             is_market = tags.get("shop") in ("supermarket", "convenience", "grocery")
+            is_commerce = (
+                tags.get("amenity") in ("restaurant", "bar", "cafe")
+                or tags.get("shop") in ("bakery", "pastry")
+            )
+            is_heritage = "historic" in tags
+            is_nuisance = tags.get("amenity") == "fuel"
 
             if is_transit:
                 transit_nodes.append(e)
@@ -193,17 +235,48 @@ class OSMFeatureExtractor:
                 school_nodes.append(e)
             if is_market:
                 market_nodes.append(e)
+            if is_commerce:
+                commerce_nodes.append(e)
+            if is_heritage:
+                heritage_nodes.append(e)
+            if is_nuisance:
+                nuisance_nodes.append(e)
 
         # Distances au plus proche
         features.dist_metro_m = _nearest_distance(lat, lon, transit_nodes)
         features.dist_park_m = _nearest_distance(lat, lon, _extract_centers(park_elements))
         features.dist_school_m = _nearest_distance(lat, lon, _extract_centers(school_nodes))
         features.dist_supermarket_m = _nearest_distance(lat, lon, market_nodes)
+        features.dist_nuisance_m = _nearest_distance(lat, lon, _extract_centers(nuisance_nodes))
 
-        # Comptage transports dans 500 m
+        # Comptage transports dans 500 m et 300 m
         features.transit_count_500m = sum(
             1 for n in transit_nodes
             if "lat" in n and _haversine(lat, lon, n["lat"], n["lon"]) <= 500
+        )
+        features.transport_count_300m = sum(
+            1 for n in transit_nodes
+            if "lat" in n and _haversine(lat, lon, n["lat"], n["lon"]) <= 300
+        )
+
+        # Comptage commerces dans 300 m
+        features.commerce_count_300m = sum(
+            1 for n in commerce_nodes
+            if "lat" in n and _haversine(lat, lon, n["lat"], n["lon"]) <= 300
+        )
+
+        # Comptage écoles dans 500 m
+        school_centers = _extract_centers(school_nodes)
+        features.school_count_500m = sum(
+            1 for n in school_centers
+            if _haversine(lat, lon, n["lat"], n["lon"]) <= 500
+        )
+
+        # Comptage patrimoine dans 500 m
+        heritage_centers = _extract_centers(heritage_nodes)
+        features.heritage_count_500m = sum(
+            1 for n in heritage_centers
+            if _haversine(lat, lon, n["lat"], n["lon"]) <= 500
         )
 
         # Surface parcs dans 500 m

@@ -48,8 +48,8 @@ _TYPES_LOCAUX_CIBLES = {"Appartement", "Maison"}
 _PRIX_MIN = 10_000          # € — en dessous : sûrement une erreur
 _PRIX_MAX = 30_000_000      # € — ventes atypiques / immeubles entiers
 _SURFACE_MIN = 5            # m²
-_SURFACE_MAX = 1_000        # m²
-_PRIX_M2_MIN = 500          # €/m²
+_SURFACE_MAX = 1_500        # m² — inclut les grands apparts légitimes
+_PRIX_M2_MIN = 2_000        # €/m² — élimine les valeurs aberrantes basses
 _PRIX_M2_MAX = 50_000       # €/m²
 
 

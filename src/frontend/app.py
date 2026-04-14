@@ -441,14 +441,13 @@ def price_card(label: str, price: int, price_m2: int,
     )
 
 
-<<<<<<< HEAD
 @st.cache_data(show_spinner="Gemini Vision…")
 def _run_vision(url: str) -> dict:
     """Score a property photo via Gemini Vision. Lazy-imports RenovationScorer."""
     from src.vision.renovation_scorer import RenovationScorer
     return RenovationScorer().score_from_url(url).to_dict()
 
-=======
+
 # ── Bookmarklet query-param ingestion ────────────────────────────────
 # When the user clicks the bookmarklet on a SeLoger/LeBonCoin page,
 # the JS extracts listing data and opens FairSquare with ?bm=1&prix=…
@@ -486,7 +485,6 @@ if _qp.get("bm") == "1":
     st.session_state["_nav"] = "🔗 Analyser une URL"
     st.query_params.clear()
     st.rerun()
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
 
 # ── Sidebar ──────────────────────────────────────────────────────────
 with st.sidebar:
@@ -843,39 +841,13 @@ elif page == "🔗 Analyser une URL":
         unsafe_allow_html=True,
     )
 
-<<<<<<< HEAD
-    _url_col, _btn_col = st.columns([5, 1])
-    with _url_col:
-        url_input = st.text_input(
-            "url", label_visibility="collapsed",
-            placeholder="https://www.seloger.com/annonces/achat/appartement/paris-11eme-75/...",
-        )
-    with _btn_col:
-        analyse_btn = st.button("Analyser ›", use_container_width=True, type="primary")
-
-    if analyse_btn and url_input.strip():
-        st.session_state.url_result = None
-        st.session_state.url_vision = None
-
-        # Step 1 — Firecrawl scraping + ML prediction
-        with st.spinner("⏳ Scraping Firecrawl + prédiction LightGBM…"):
-            try:
-                from src.frontend.url_analyzer import analyze_listing_url
-                st.session_state.url_result = analyze_listing_url(url_input.strip())
-            except Exception as _exc:
-                st.session_state.url_result = {
-                    "success": False, "error": str(_exc),
-                    "titre": "", "prix_annonce": 0, "surface": 0, "pieces": 0,
-                    "arrondissement": 0, "prix_predit_m2": 0, "prix_predit_m2_brut": 0,
-                    "prix_predit_total": 0, "gem_score": 0, "gain_potentiel": 0,
-                    "is_hidden_gem": False, "shap_top3": [], "listing_extras": {},
-                    "corrections": {}, "photo_url": None,
-=======
     # ── Session state for multi-step flow ─────────────────────────
     if "url_manual_state" not in st.session_state:
         st.session_state.url_manual_state = None   # {"partial": dict, "url": str}
     if "url_result" not in st.session_state:
         st.session_state.url_result = None
+    if "url_vision" not in st.session_state:
+        st.session_state.url_vision = None
 
     # ── Auto-analysis from bookmarklet ────────────────────────────
     if "bm_data" in st.session_state:
@@ -915,6 +887,7 @@ elif page == "🔗 Analyser une URL":
         # Reset any previous state
         st.session_state.url_manual_state = None
         st.session_state.url_result = None
+        st.session_state.url_vision = None
         with st.spinner("Analyse en cours…"):
             try:
                 from src.frontend.url_analyzer import analyze_listing_url
@@ -927,7 +900,6 @@ elif page == "🔗 Analyser une URL":
                     "prix_predit_m2": 0, "prix_predit_total": 0,
                     "gem_score": 0, "gain_potentiel": 0,
                     "is_hidden_gem": False, "shap_top3": [],
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
                 }
         if _r.get("status") == "needs_manual_input":
             st.session_state.url_manual_state = {
@@ -937,13 +909,12 @@ elif page == "🔗 Analyser une URL":
         else:
             st.session_state.url_result = _r
 
-<<<<<<< HEAD
         # Step 2 — Gemini Vision on listing photo
         _r = st.session_state.url_result
         if _r and _r.get("success") and _r.get("photo_url"):
             _gkey = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
             if _gkey:
-                with st.spinner("👁️ Gemini Vision — analyse de la photo…"):
+                with st.spinner("Gemini Vision — analyse de la photo…"):
                     try:
                         from src.vision.renovation_scorer import RenovationScorer
                         st.session_state.url_vision = RenovationScorer().score_from_url(
@@ -953,39 +924,6 @@ elif page == "🔗 Analyser une URL":
                         logging.warning("Vision failed: %s", _ve)
                         st.session_state.url_vision = None
 
-    elif analyse_btn:
-        st.warning("Colle une URL dans le champ ci-dessus.")
-
-    # ══ DISPLAY ══════════════════════════════════════════════════
-    _res = st.session_state.url_result
-    _vis = st.session_state.url_vision
-
-    if _res is None:
-        st.markdown(
-            '<div style="background:#131929;border:1px dashed #1E2D45;border-radius:16px;'
-            'padding:48px;text-align:center;color:#4A5568;font-size:0.92em;margin-top:16px">'
-            '🏠 &nbsp; Colle une URL et clique sur <b>Analyser ›</b></div>',
-            unsafe_allow_html=True,
-        )
-
-    elif not _res["success"]:
-        st.error(f"**Scraping échoué** — {_res['error']}")
-        st.info("Essaie une autre URL ou utilise la page **Analyse d'annonce** pour saisir manuellement.", icon="💡")
-
-    else:
-        # ── Verdict badge ──────────────────────────────────────────
-        _gsc  = _res["gem_score"] * 100
-        _arr  = _res["arrondissement"]
-        _sarr = f'{_arr}{"er" if _arr == 1 else "e"}'
-        if _res["is_hidden_gem"]:
-            _badge_bg    = "linear-gradient(135deg,#00D4AA,#0095FF)"
-            _badge_color = "#0A0E1A"
-            _badge_text  = f"🔥 HIDDEN GEM · {_gsc:.1f}% SOUS MARCHÉ"
-        elif _res["gem_score"] < -0.02:
-            _badge_bg    = "linear-gradient(135deg,#ef4444,#dc2626)"
-            _badge_color = "#fff"
-            _badge_text  = f"⚠️ SURCOTÉ · +{abs(_gsc):.1f}% AU-DESSUS DU MARCHÉ"
-=======
     elif analyse_btn and not url_input.strip():
         st.warning("Collez une URL d'annonce dans le champ ci-dessus.")
 
@@ -1026,7 +964,7 @@ elif page == "🔗 Analyser une URL":
             format_func=lambda x: f"Paris {x}{'er' if x == 1 else 'e'}",
         )
 
-        if st.button("🔍 Analyser avec ces données", type="primary"):
+        if st.button("Analyser avec ces données", type="primary"):
             with st.spinner("Calcul en cours…"):
                 try:
                     from src.frontend.url_analyzer import analyze_listing_url
@@ -1084,13 +1022,34 @@ elif page == "🔗 Analyser une URL":
                 else:
                     st.warning("Collez d'abord le code source HTML.")
 
-    # ── Result display ────────────────────────────────────────────
-    if st.session_state.url_result is not None:
-        result = st.session_state.url_result
+    # ══ DISPLAY ══════════════════════════════════════════════════
+    _res = st.session_state.url_result
+    _vis = st.session_state.url_vision
 
-        if not result.get("success"):
-            st.error(f"**Analyse échouée** — {result.get('error', 'Erreur inconnue')}")
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
+    if _res is None:
+        st.markdown(
+            '<div style="background:#131929;border:1px dashed #1E2D45;border-radius:16px;'
+            'padding:48px;text-align:center;color:#4A5568;font-size:0.92em;margin-top:16px">'
+            'Colle une URL et clique sur <b>Analyser</b></div>',
+            unsafe_allow_html=True,
+        )
+
+    elif not _res.get("success", False):
+        st.error(f"**Analyse échouée** — {_res.get('error', 'Erreur inconnue')}")
+
+    else:
+        # ── Verdict badge ──────────────────────────────────────────
+        _gsc  = _res["gem_score"] * 100
+        _arr  = _res["arrondissement"]
+        _sarr = f'{_arr}{"er" if _arr == 1 else "e"}'
+        if _res.get("is_hidden_gem"):
+            _badge_bg    = "linear-gradient(135deg,#00D4AA,#0095FF)"
+            _badge_color = "#0A0E1A"
+            _badge_text  = f"HIDDEN GEM · {_gsc:.1f}% SOUS MARCHÉ"
+        elif _res["gem_score"] < -0.02:
+            _badge_bg    = "linear-gradient(135deg,#ef4444,#dc2626)"
+            _badge_color = "#fff"
+            _badge_text  = f"SURCOTÉ · +{abs(_gsc):.1f}% AU-DESSUS DU MARCHÉ"
         else:
             _badge_bg    = "#1E2D45"
             _badge_color = "#8899BB"
@@ -1403,60 +1362,60 @@ elif page == "🔗 Analyser une URL":
             _cc3.metric("Rénovation", _pct_delta(_corr2.get("reno_corr",  1.0)))
             _cc4.metric("Total ×",    _pct_delta(_corr2.get("total_corr", 1.0)))
 
-<<<<<<< HEAD
+        # ── SHAP / Comparaison prix ─────────────────────────────────
+            if _res.get("shap_top3"):
+                st.markdown("#### Facteurs clés (SHAP)")
+                for s in _res["shap_top3"]:
+                    impact  = s["impact"]
+                    color   = "#00D4AA" if impact > 0 else "#ef4444"
+                    sign    = "+" if impact > 0 else ""
+                    bar_pct = min(100, int(abs(impact) / max(abs(s2["impact"]) for s2 in _res["shap_top3"]) * 100))
+                    st.markdown(
+                        f'<div style="background:#131929;border:1px solid #1E2D45;'
+                        f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
+                        f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+                        f'<span style="color:#C4D0E8;font-size:0.9em">{s["feature"]}</span>'
+                        f'<span style="color:{color};font-weight:700">{sign}{impact:,} €/m²</span>'
+                        f'</div>'
+                        f'<div style="background:#0A0E1A;border-radius:4px;height:4px">'
+                        f'<div style="background:{color};width:{bar_pct}%;height:4px;border-radius:4px"></div>'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown("#### Comparaison prix")
+                fig_cmp = {
+                    "Affiché":  _res["prix_annonce"],
+                    "FairSquare": _res["prix_predit_total"],
+                }
+                import plotly.graph_objects as _go
+                fig = _go.Figure(_go.Bar(
+                    x=list(fig_cmp.keys()),
+                    y=list(fig_cmp.values()),
+                    marker_color=["#4A5568", "#00D4AA"],
+                ))
+                fig.update_layout(
+                    paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
+                    font=dict(color="#C4D0E8"),
+                    yaxis=dict(gridcolor="#1E2D45", tickformat=","),
+                    showlegend=False, height=260,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
         # ── Carte ──────────────────────────────────────────────────
         _rlat = _res.get("latitude", 0.0)
         _rlon = _res.get("longitude", 0.0)
         if _rlat and _rlon and abs(_rlat) > 0.001 and abs(_rlon) > 0.001:
             st.divider()
-            st.markdown("#### 🗺️ Localisation")
+            st.markdown("#### Localisation")
             _map_df = pd.DataFrame([{
                 "lat": _rlat, "lon": _rlon,
                 "label": _res.get("titre", ""), "prix": _res["prix_annonce"],
             }])
             st.map(_map_df, latitude="lat", longitude="lon", zoom=15, size=50)
-=======
-                if result["shap_top3"]:
-                    st.markdown("#### Facteurs clés (SHAP)")
-                    for s in result["shap_top3"]:
-                        impact  = s["impact"]
-                        color   = "#00D4AA" if impact > 0 else "#ef4444"
-                        sign    = "+" if impact > 0 else ""
-                        bar_pct = min(100, int(abs(impact) / max(abs(s2["impact"]) for s2 in result["shap_top3"]) * 100))
-                        st.markdown(
-                            f'<div style="background:#131929;border:1px solid #1E2D45;'
-                            f'border-radius:8px;padding:10px 14px;margin-bottom:8px">'
-                            f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
-                            f'<span style="color:#C4D0E8;font-size:0.9em">{s["feature"]}</span>'
-                            f'<span style="color:{color};font-weight:700">{sign}{impact:,} €/m²</span>'
-                            f'</div>'
-                            f'<div style="background:#0A0E1A;border-radius:4px;height:4px">'
-                            f'<div style="background:{color};width:{bar_pct}%;height:4px;border-radius:4px"></div>'
-                            f'</div></div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.markdown("#### Comparaison prix")
-                    fig_cmp = {
-                        "Affiché":  result["prix_annonce"],
-                        "FairSquare": result["prix_predit_total"],
-                    }
-                    import plotly.graph_objects as _go
-                    fig = _go.Figure(_go.Bar(
-                        x=list(fig_cmp.keys()),
-                        y=list(fig_cmp.values()),
-                        marker_color=["#4A5568", "#00D4AA"],
-                    ))
-                    fig.update_layout(
-                        paper_bgcolor="#0A0E1A", plot_bgcolor="#131929",
-                        font=dict(color="#C4D0E8"),
-                        yaxis=dict(gridcolor="#1E2D45", tickformat=","),
-                        showlegend=False, height=260,
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
 
     # ── Bookmarklet install ───────────────────────────────────────
-    with st.expander("🔖 Analyser en 1 clic depuis SeLoger (bookmarklet)"):
+    with st.expander("Analyser en 1 clic depuis SeLoger (bookmarklet)"):
         st.markdown(
             "**Installation** — glissez le bouton ci-dessous dans votre barre de favoris :"
         )
@@ -1484,8 +1443,8 @@ elif page == "🔗 Analyser une URL":
               #bm-link:hover {{ opacity:0.85; }}
               p {{ color:#8899BB; font-family:sans-serif; font-size:0.82em; margin-top:8px; }}
             </style>
-            <a id="bm-link" href="#">🔖 FairSquare — Analyser</a>
-            <p>⬆ Glissez ce bouton dans votre barre de favoris (ou clic droit → Ajouter aux favoris)</p>
+            <a id="bm-link" href="#">FairSquare — Analyser</a>
+            <p>Glissez ce bouton dans votre barre de favoris (ou clic droit, Ajouter aux favoris)</p>
             <script>
               var base = window.parent.location.origin;
               var bm = {json.dumps(_BM_TEMPLATE)}.replace('__URL__', base);
@@ -1520,10 +1479,9 @@ En cas de blocage, FairSquare affiche un formulaire pré-rempli (arrondissement 
 
 **Calcul du Gem Score**
 `gem_score = (prix_prédit/m² − prix_affiché/m²) / prix_prédit/m²`
-- `> 8%` → Hidden Gem (sous-évalué)
+- `> 10%` → Hidden Gem (sous-évalué)
 - `< 0%` → Surcoté (au-dessus du marché)
 """)
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
 
 
 # ════════════════════════════════════════════════════════════════════

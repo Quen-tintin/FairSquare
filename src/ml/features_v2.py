@@ -44,6 +44,9 @@ FEATURE_COLS_V2 = [
     "lat_lon_cross",
     # Interactions
     "arr_price_x_log_surface",  # arr_target_enc × log_surface
+    "premium_x_log_surface",    # is_premium_arr × log_surface
+    "premium_x_dist_center",    # is_premium_arr × dist_center_km
+    "voie_x_density",           # voie_recent_prix_m2 × pieces_per_m2
     # Temporal
     "annee",
     "mois",
@@ -314,8 +317,11 @@ def add_features(
     else:
         data["voie_recent_prix_m2"] = data["voie_recent_prix_m2"].fillna(global_mean)
 
-    # ── Interaction ───────────────────────────────────────────────────
+    # ── Interactions ─────────────────────────────────────────────────
     data["arr_price_x_log_surface"] = data["arr_target_enc"] * data["log_surface"]
+    data["premium_x_log_surface"]   = data["is_premium_arr"] * data["log_surface"]
+    data["premium_x_dist_center"]   = data["is_premium_arr"] * data["dist_center_km"]
+    data["voie_x_density"]          = data["voie_recent_prix_m2"] * data["pieces_per_m2"]
 
     # ── Ensure nombre_pieces_principales is float ─────────────────────
     data["nombre_pieces_principales"] = pieces
@@ -325,6 +331,23 @@ def add_features(
         data["trimestre"] = ((data["mois"].fillna(6) - 1) // 3 + 1).astype(int)
     if "annee" not in data.columns:
         data["annee"] = 2023
+
+    # ── OSM features — use existing columns or fill Paris-wide medians ────────
+    data["dist_centre_paris_km"] = haversine_km(lat, lon, PARIS_CENTER_LAT, PARIS_CENTER_LON)
+
+    _osm_defaults = {
+        "dist_metro_m":    214.0,
+        "walkability_score": 43.0,
+        "nb_restaurants":  102.0,
+        "nb_transport":     28.0,
+        "nb_parks":          6.0,
+        "nb_ecoles":         9.0,
+    }
+    for col, default in _osm_defaults.items():
+        if col not in data.columns:
+            data[col] = default
+        else:
+            data[col] = data[col].fillna(default)
 
     return data
 

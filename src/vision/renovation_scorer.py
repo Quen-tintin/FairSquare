@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 SpaceCategory = Literal["Étroit", "Standard", "Spacieux"]
 
 # Gemini 3.1 Flash Lite — 500 RPD, 6 RPM (meilleur quota dispo pour la vision)
-DEFAULT_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 # ------------------------------------------------------------------ #
 #  Prompt                                                              #
@@ -58,6 +58,10 @@ Format attendu :
 {
   "renovation_score": <entier de 1 à 5>,
   "space_category": "<Étroit|Standard|Spacieux>",
+  "luminosite": "<Sombre|Moyenne|Lumineuse>",
+  "hauteur_plafond": "<Basse|Standard|Haute>",
+  "has_outdoor_space": <true|false>,
+  "qualite_generale": "<Basique|Standard|Premium>",
   "reasoning": "<justification concise en 1-2 phrases>"
 }
 
@@ -68,10 +72,10 @@ Grille renovation_score :
   4 = Mauvais état, gros travaux (humidité visible, électricité ancienne)
   5 = Inhabitable / travaux majeurs de structure
 
-Grille space_category :
-  Étroit   = pièce < 12 m² apparent, mobilier serré
-  Standard = pièce 12–25 m² apparent
-  Spacieux = pièce > 25 m² apparent, grandes ouvertures
+luminosite : évaluation de la lumière naturelle visible dans la pièce.
+hauteur_plafond : Basse < 2.5m, Standard 2.5–3m, Haute > 3m (haussmannien typique).
+has_outdoor_space : true si on voit un balcon, terrasse ou jardin accessible.
+qualite_generale : impression globale des matériaux et finitions.
 """.strip()
 
 
@@ -84,6 +88,10 @@ class VisionResult:
     """Résultat d'une analyse Vision pour une photo."""
     renovation_score: int
     space_category: SpaceCategory
+    luminosite: str          # "Sombre" | "Moyenne" | "Lumineuse"
+    hauteur_plafond: str     # "Basse" | "Standard" | "Haute"
+    has_outdoor_space: bool
+    qualite_generale: str    # "Basique" | "Standard" | "Premium"
     reasoning: str
     model_used: str
     raw_response: str
@@ -92,6 +100,10 @@ class VisionResult:
         return {
             "renovation_score": self.renovation_score,
             "space_category": self.space_category,
+            "luminosite": self.luminosite,
+            "hauteur_plafond": self.hauteur_plafond,
+            "has_outdoor_space": self.has_outdoor_space,
+            "qualite_generale": self.qualite_generale,
             "reasoning": self.reasoning,
             "model_used": self.model_used,
         }
@@ -113,28 +125,63 @@ class RenovationScorer:
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
-        max_tokens: int = 300,
+        max_tokens: int = 2048,
     ) -> None:
         settings = get_settings()
         if not settings.google_api_key:
             raise ValueError("GOOGLE_API_KEY manquante dans le fichier .env")
         self._client = genai.Client(api_key=settings.google_api_key)
         self._model_name = model
-        self._generate_config = types.GenerateContentConfig(
-            max_output_tokens=max_tokens,
-            temperature=0.1,
-        )
+        # Disable thinking for gemini-2.5 models — structured JSON extraction
+        # doesn't benefit from chain-of-thought, and thinking tokens eat into
+        # max_output_tokens, truncating the JSON response.
+        _config_kwargs: dict = {"max_output_tokens": max_tokens, "temperature": 0.1}
+        try:
+            _config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except AttributeError:
+            pass  # older SDK versions don't have ThinkingConfig
+        self._generate_config = types.GenerateContentConfig(**_config_kwargs)
 
     # ------------------------------------------------------------------ #
     #  Interface publique                                                  #
     # ------------------------------------------------------------------ #
 
+    _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+    def score_from_uri(self, image_url: str) -> VisionResult:
+        """Pass image URL directly to Gemini — no local download, avoids CDN auth issues."""
+        logger.info("Scoring via URI: %s", image_url[:80])
+        url_lower = image_url.lower().split("?")[0]
+        if url_lower.endswith(".png"):
+            mime = "image/png"
+        elif url_lower.endswith(".webp"):
+            mime = "image/webp"
+        elif url_lower.endswith(".gif"):
+            mime = "image/gif"
+        else:
+            mime = "image/jpeg"
+        image_part = types.Part.from_uri(file_uri=image_url, mime_type=mime)
+        return self._call_gemini_raw([_PROMPT, image_part])
+
     def score_from_url(self, image_url: str) -> VisionResult:
-        """Télécharge l'image depuis une URL et l'analyse."""
+        """Télécharge l'image depuis une URL et l'analyse (fallback avec Referer)."""
         logger.info("Downloading image: %s", image_url[:80])
-        headers = {"User-Agent": "FairSquare/0.1 (research project; python-httpx)"}
+        from urllib.parse import urlparse
+        parsed = urlparse(image_url)
+        referer = f"{parsed.scheme}://{parsed.netloc}/"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Referer": referer,
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
         response = httpx.get(image_url, follow_redirects=True, timeout=15.0, headers=headers)
         response.raise_for_status()
+        if len(response.content) > self._MAX_IMAGE_BYTES:
+            raise ValueError(f"Image trop volumineuse ({len(response.content) / 1e6:.1f} MB > 20 MB)")
         image = Image.open(BytesIO(response.content)).convert("RGB")
         return self._call_gemini(image)
 
@@ -148,32 +195,40 @@ class RenovationScorer:
         return self._call_gemini(image)
 
     def score_batch(self, image_urls: list[str]) -> list[VisionResult]:
-        """Analyse plusieurs images en séquence."""
+        """Analyse plusieurs images en séquence. Tries native URI approach first."""
         results = []
         for i, url in enumerate(image_urls):
             logger.info("Batch scoring — image %d/%d", i + 1, len(image_urls))
             try:
-                results.append(self.score_from_url(url))
-            except Exception as exc:
-                logger.error("Failed to score image %s: %s", url[:60], exc)
-                results.append(_fallback_result(str(exc), self._model_name))
+                results.append(self.score_from_uri(url))
+            except Exception as exc_uri:
+                logger.warning("URI scoring failed (%s), falling back to download", exc_uri)
+                try:
+                    results.append(self.score_from_url(url))
+                except Exception as exc:
+                    logger.error("Failed to score image %s: %s", url[:60], exc)
+                    results.append(_fallback_result(str(exc), self._model_name))
         return results
 
     # ------------------------------------------------------------------ #
     #  Appel Gemini                                                        #
     # ------------------------------------------------------------------ #
 
-    def _call_gemini(self, image: Image.Image) -> VisionResult:
-        """Envoie l'image + prompt à Gemini et parse la réponse JSON."""
+    def _call_gemini_raw(self, contents: list) -> VisionResult:
+        """Core Gemini call — contents can be [prompt_str, PIL.Image] or [prompt_str, Part]."""
         logger.debug("Calling Gemini model: %s", self._model_name)
         response = self._client.models.generate_content(
             model=self._model_name,
-            contents=[_PROMPT, image],
+            contents=contents,
             config=self._generate_config,
         )
         raw = response.text.strip()
         logger.debug("Raw Gemini response: %s", raw)
         return _parse_response(raw, self._model_name)
+
+    def _call_gemini(self, image: Image.Image) -> VisionResult:
+        """Envoie une image PIL + prompt à Gemini."""
+        return self._call_gemini_raw([_PROMPT, image])
 
 
 # ------------------------------------------------------------------ #
@@ -192,15 +247,37 @@ def _parse_response(raw: str, model: str) -> VisionResult:
         else:
             raise ValueError(f"Réponse non-parseable : {raw[:200]}")
 
-    score = max(1, min(5, int(data.get("renovation_score", 3))))
+    try:
+        score = max(1, min(5, int(data.get("renovation_score", 3))))
+    except (ValueError, TypeError):
+        logger.warning("renovation_score non-numérique: %r → 3", data.get("renovation_score"))
+        score = 3
     category = data.get("space_category", "Standard")
     if category not in ("Étroit", "Standard", "Spacieux"):
         logger.warning("Catégorie inconnue '%s' → 'Standard'", category)
         category = "Standard"
 
+    luminosite = data.get("luminosite", "Moyenne")
+    if luminosite not in ("Sombre", "Moyenne", "Lumineuse"):
+        luminosite = "Moyenne"
+
+    hauteur_plafond = data.get("hauteur_plafond", "Standard")
+    if hauteur_plafond not in ("Basse", "Standard", "Haute"):
+        hauteur_plafond = "Standard"
+
+    has_outdoor = bool(data.get("has_outdoor_space", False))
+
+    qualite = data.get("qualite_generale", "Standard")
+    if qualite not in ("Basique", "Standard", "Premium"):
+        qualite = "Standard"
+
     return VisionResult(
         renovation_score=score,
         space_category=category,
+        luminosite=luminosite,
+        hauteur_plafond=hauteur_plafond,
+        has_outdoor_space=has_outdoor,
+        qualite_generale=qualite,
         reasoning=data.get("reasoning", ""),
         model_used=model,
         raw_response=raw,
@@ -211,6 +288,10 @@ def _fallback_result(error_msg: str, model: str) -> VisionResult:
     return VisionResult(
         renovation_score=3,
         space_category="Standard",
+        luminosite="Moyenne",
+        hauteur_plafond="Standard",
+        has_outdoor_space=False,
+        qualite_generale="Standard",
         reasoning=f"Erreur d'analyse : {error_msg}",
         model_used=model,
         raw_response="",

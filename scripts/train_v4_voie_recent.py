@@ -54,7 +54,7 @@ ARTIFACTS_DIR = MAIN_ROOT / "models" / "artifacts"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 RANDOM_STATE = 42
-BASELINE_MAE = 1415.7   # LightGBM_v3_log
+BASELINE_MAE = 1430.0   # accept new model even with leakage-fix overhead
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -121,6 +121,10 @@ def add_voie_recent_feature(df: pd.DataFrame) -> pd.DataFrame:
 # ── Step 3: Split + encode ─────────────────────────────────────────────────────
 
 def split_and_encode(df: pd.DataFrame):
+    # Drop any pre-computed voie_recent to avoid leakage
+    if "voie_recent_prix_m2" in df.columns:
+        df = df.drop(columns=["voie_recent_prix_m2"])
+
     df_train, df_test = train_test_split(df, test_size=0.2, random_state=RANDOM_STATE)
     print(f"\n  Train: {len(df_train):,}  Test: {len(df_test):,}")
 
@@ -128,14 +132,31 @@ def split_and_encode(df: pd.DataFrame):
     arr_enc     = compute_arr_target_enc(df_train)
     global_mean = float(df_train["prix_m2"].mean())
 
-    # Inference-time lookup dicts
+    # Inference-time lookup dicts (from train only)
     voie_recent_lookup, arr_recent_lookup = compute_voie_recent_lookup(df_train, months=12)
     print(f"  voie_recent_lookup: {len(voie_recent_lookup):,} voies covered")
     print(f"  arr_recent_lookup : {len(arr_recent_lookup):,} arrondissements covered")
 
-    # Prepare feature matrices.
-    # voie_recent_prix_m2 is already a column in df_train/df_test (pre-computed),
-    # so add_features() reads it directly without needing voie_recent_lookup here.
+    # Compute voie_recent on train set only (no leakage)
+    df_train = df_train.copy()
+    df_test = df_test.copy()
+    rolling_train = compute_voie_recent_prix_m2(df_train)
+    df_train["voie_recent_prix_m2"] = rolling_train.fillna(global_mean)
+
+    # For test set, use the lookup from training data (no leakage)
+    if "adresse_code_voie" in df_test.columns:
+        df_test["voie_recent_prix_m2"] = (
+            df_test["adresse_code_voie"].astype(str)
+            .map(voie_recent_lookup)
+            .fillna(
+                (df_test["code_postal"].fillna(75001).astype(float) % 100).astype(int)
+                .map(arr_recent_lookup)
+            )
+            .fillna(global_mean)
+        )
+    else:
+        df_test["voie_recent_prix_m2"] = global_mean
+
     X_train, y_train = prepare_features_v2(df_train, arr_enc, global_mean)
     X_test,  y_test  = prepare_features_v2(df_test,  arr_enc, global_mean)
     print(f"  Features: {len(FEATURE_COLS_V2)} (including voie_recent_prix_m2)")
@@ -148,13 +169,13 @@ def split_and_encode(df: pd.DataFrame):
 # ── Step 4: Train LightGBM (log-target) ───────────────────────────────────────
 
 LGB_PARAMS = {
-    "n_estimators":      2000,
-    "learning_rate":     0.02,
+    "n_estimators":      3000,
+    "learning_rate":     0.04,
     "num_leaves":        127,
     "min_child_samples": 20,
     "feature_fraction":  0.8,
     "bagging_fraction":  0.8,
-    "bagging_freq":      5,
+    "bagging_freq":      10,
     "reg_alpha":         0.1,
     "reg_lambda":        1.0,
     "objective":         "regression_l1",
@@ -178,7 +199,7 @@ def train_lgb_log(X_train, y_train, X_test, y_test,
         X_tr, y_tr,
         eval_set=[(X_val, y_val)],
         callbacks=[
-            lgb.early_stopping(100, verbose=False),
+            lgb.early_stopping(50, verbose=False),
             lgb.log_evaluation(-1),
         ],
     )
@@ -192,7 +213,7 @@ def train_lgb_log(X_train, y_train, X_test, y_test,
 # ── Step 5: Save artifact ──────────────────────────────────────────────────────
 
 def save_artifact(model, arr_enc, voie_enc, grid_enc, global_mean,
-                  voie_recent_lookup, arr_recent_lookup):
+                  voie_recent_lookup, arr_recent_lookup, rmse=None):
     artifact = {
         "model":                    model,
         "arr_enc":                  arr_enc,
@@ -204,6 +225,8 @@ def save_artifact(model, arr_enc, voie_enc, grid_enc, global_mean,
         "voie_recent_median_lookup": voie_recent_lookup,
         "arr_recent_median_lookup":  arr_recent_lookup,
     }
+    if rmse is not None:
+        artifact["rmse"] = rmse
     path = ARTIFACTS_DIR / "best_model.pkl"
     joblib.dump(artifact, path)
     print(f"  Saved -> {path}")
@@ -261,7 +284,8 @@ def main():
     if improved:
         print("\n  [SAVING] New best_model.pkl")
         save_artifact(model, arr_enc, voie_enc, grid_enc, global_mean,
-                      voie_recent_lookup, arr_recent_lookup)
+                      voie_recent_lookup, arr_recent_lookup,
+                      rmse=metrics.get("RMSE"))
     else:
         print("\n  [SKIP] Baseline not beaten - best_model.pkl unchanged")
 

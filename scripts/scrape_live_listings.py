@@ -408,9 +408,12 @@ def score_listings(listings: list[dict], artifact) -> list[dict]:
                 print(f"  [WARN] Prediction echouee pour {item.get('titre', '?')}: {exc}")
                 continue
 
+        # Correction marge de négociation : DVF = prix final, annonce ~7% plus élevé
+        _MARGE_NEGO = 0.07
+        prix_estime_vente = prix_annonce * (1 - _MARGE_NEGO)
         prix_affiche_m2 = prix_annonce / surface
-        gem_score = (prix_predit_m2 - prix_affiche_m2) / prix_predit_m2
-        gain_potentiel = prix_predit - prix_annonce
+        gem_score = (prix_predit_m2 - (prix_estime_vente / surface)) / prix_predit_m2
+        gain_potentiel = prix_predit - prix_estime_vente
 
         scored_item = {
             **item,
@@ -428,10 +431,10 @@ def score_listings(listings: list[dict], artifact) -> list[dict]:
               f"vs affiche {prix_affiche_m2:,.0f}e/m2 "
               f"gem_score={gem_score:.3f}")
 
-    # Filter: gem_score > 0.08 (under-valued by 8%)
-    gems = [s for s in scored if s["gem_score"] > 0.08]
+    # Filter: gem_score > 0.10 (under-valued by 10%)
+    gems = [s for s in scored if s["gem_score"] > 0.10]
     gems.sort(key=lambda x: x["gem_score"], reverse=True)
-    print(f"\n[RESULTATS] {len(scored)} biens scores, {len(gems)} pepites (gem_score > 8%)")
+    print(f"\n[RESULTATS] {len(scored)} biens scores, {len(gems)} pepites (gem_score > 10%)")
     return gems
 
 
@@ -461,7 +464,7 @@ def main():
             "date_mise_a_jour": datetime.datetime.now().strftime("%Y-%m-%d"),
             "nb_annonces_analysees": len(listings),
             "nb_pepites": len(gems),
-            "seuil_gem_score": 0.08,
+            "seuil_gem_score": 0.10,
         },
         "gems": gems,
     }

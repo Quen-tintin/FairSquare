@@ -36,7 +36,7 @@ except ImportError:
 # Firecrawl client — lazy singleton
 _firecrawl_app: Any = None
 
-FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "fc-3e90c5b3f59340a7b9756a11680ad0e9")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 
 
 def _get_firecrawl() -> Any:
@@ -72,7 +72,14 @@ FLOOR_CORRECTIONS: dict[int, float] = {
 }
 DPE_CORRECTIONS: dict[str, float] = {
     'A': 1.05, 'B': 1.03, 'C': 1.01, 'D': 1.00,
-    'E': 0.97, 'F': 0.94, 'G': 0.90,
+    'E': 0.97, 'F': 0.91, 'G': 0.85,
+}
+# DVF data is ~6-10 months stale → discount slightly for market drift
+MARKET_TREND_FACTOR: float = 0.97
+EXPOSITION_CORRECTIONS: dict[str, float] = {
+    'S': 1.025, 'SE': 1.02, 'SO': 1.02,
+    'E': 1.01,  'O': 1.00,
+    'N': 0.98,  'NE': 0.985, 'NO': 0.985,
 }
 RENOVATION_KEYWORDS = [
     "rénov", "refait à neuf", "travaux récents", "parquet",
@@ -287,6 +294,73 @@ def _extract_photo_url(soup: BeautifulSoup) -> str | None:
     return None
 
 
+def _extract_all_photo_urls(soup: BeautifulSoup, raw: str, max_photos: int = 5) -> list[str]:
+    """
+    Extract up to `max_photos` listing photo URLs for Vision batch analysis.
+    Tries og:image, JSON-LD, SeLoger JSON blobs, and CDN regex patterns.
+    Prefers URLs that carry the ?ci_seal token (SeLoger CDN authentication).
+    """
+    # base_path → best_url  (prefer ci_seal variants)
+    best: dict[str, str] = {}
+
+    def _add(u: str) -> None:
+        u = u.strip().replace("\\/", "/").replace("\\u002F", "/")
+        if not u.startswith("http"):
+            return
+        # Strip fragment and clean trailing junk
+        u = u.split("#")[0].rstrip("\\\"'>,")
+        base = u.split("?")[0]
+        existing = best.get(base)
+        if existing is None:
+            best[base] = u
+        elif "ci_seal" in u and "ci_seal" not in existing:
+            best[base] = u  # upgrade to sealed version
+
+    # 1. og:image (hero photo — typically already has ci_seal)
+    og = soup.find("meta", {"property": "og:image"})
+    if og:
+        _add(og.get("content", ""))
+
+    # 2. JSON-LD image array
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or "")
+            if isinstance(data, list):
+                data = data[0]
+            if not isinstance(data, dict):
+                continue
+            imgs = data.get("image", [])
+            if isinstance(imgs, str):
+                _add(imgs)
+            elif isinstance(imgs, list):
+                for img in imgs:
+                    if isinstance(img, str):
+                        _add(img)
+                    elif isinstance(img, dict):
+                        _add(img.get("url", "") or img.get("contentUrl", ""))
+        except Exception:
+            pass
+
+    # 3. SeLoger CDN regex — include full query string so ?ci_seal=... is preserved
+    #    SeLoger JSON often escapes slashes as \/ — unescape before matching
+    raw_unescaped = raw.replace("\\/", "/")
+    cdn_patterns = [
+        # mms.seloger.com CDN (main photo CDN)
+        r'https://mms\.seloger\.com/[^\s"\'<>\\]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>\\]*)?',
+        # Other real-estate CDNs
+        r'https://[^\s"\'<>\\]+(?:bienici\.com|leboncoin\.fr|immobilier\.notaires\.fr)'
+        r'[^\s"\'<>\\]*\.(?:jpg|jpeg|png|webp)(?:\?[^\s"\'<>\\]*)?',
+    ]
+    for pat in cdn_patterns:
+        for u in re.findall(pat, raw_unescaped, re.IGNORECASE):
+            _add(u)
+
+    # 4. Collect results: ci_seal URLs first, then others, up to max_photos
+    sealed   = [u for u in best.values() if "ci_seal" in u]
+    unsealed = [u for u in best.values() if "ci_seal" not in u]
+    return (sealed + unsealed)[:max_photos]
+
+
 # ────────────────────────────────────────────────────────────────────
 # SeLoger scraper
 # ────────────────────────────────────────────────────────────────────
@@ -337,6 +411,11 @@ def _scrape_seloger(url: str) -> dict:
                         arr = _arr_from_postal(cp)
                         if arr:
                             result["arrondissement"] = arr
+                # Date fields in JSON-LD
+                for date_field in ("datePublished", "dateCreated", "dateModified"):
+                    if date_field in data and not result.get("date_publication"):
+                        result["date_publication"] = data[date_field]
+                        break
         except Exception:
             pass
 
@@ -458,7 +537,31 @@ def _scrape_seloger(url: str) -> dict:
     if not result.get("photo_url"):
         result["photo_url"] = _extract_photo_url(soup)
 
+    # ── 6. Date de publication (fallback regex) ──────────────────
+    if not result.get("date_publication"):
+        m_date = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', raw)
+        if not m_date:
+            m_date = re.search(r'"(?:date|publishedAt|createdAt)"\s*:\s*"(\d{4}-\d{2}-\d{2})', raw)
+        if m_date:
+            result["date_publication"] = m_date.group(1)
+
     return result
+
+
+def _parse_listing_date(date_str: str) -> int | None:
+    """Parse an ISO date string and return days since publication, or None."""
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            from datetime import timezone
+            dt = datetime.strptime(date_str[:19], fmt[:len(fmt)])
+            delta = datetime.now() - dt.replace(tzinfo=None) if dt.tzinfo else datetime.now() - dt
+            days = delta.days
+            return max(0, days) if days < 3650 else None  # sanity: < 10 years
+        except Exception:
+            continue
+    return None
 
 
 def _dig_seloger_json(obj: dict, result: dict) -> None:
@@ -477,6 +580,10 @@ def _dig_seloger_json(obj: dict, result: dict) -> None:
             arr = _arr_from_postal(val)
             if arr:
                 result["arrondissement"] = arr
+        elif lkey in ("datecreation", "datepublication", "publicationdate", "createdat",
+                      "insertiondate", "firstpublishedat", "publishedat") and not result.get("date_publication"):
+            if isinstance(val, str):
+                result["date_publication"] = val
         elif isinstance(val, dict):
             _dig_seloger_json(val, result)
         elif isinstance(val, list):
@@ -792,6 +899,38 @@ def extract_listing_features(html: str, soup: BeautifulSoup) -> dict:
             except Exception:
                 pass
 
+    # ── 5. Balcon / Terrasse ─────────────────────────────────────────
+    has_balcon = bool(re.search(r'\bbalcon\b', text, re.IGNORECASE))
+    has_terrasse = bool(re.search(r'\bterrasse\b', text, re.IGNORECASE))
+    if has_balcon:
+        features_found.append("Balcon")
+    if has_terrasse:
+        features_found.append("Terrasse")
+
+    # ── 6. Parking / Box / Garage ───────────────────────────────────
+    has_parking = bool(re.search(r'\b(parking|box|garage)\b', text, re.IGNORECASE))
+    if has_parking:
+        features_found.append("Parking/Box")
+
+    # ── 7. Cave ──────────────────────────────────────────────────────
+    has_cave = bool(re.search(r'\bcave\b', text, re.IGNORECASE))
+    if has_cave:
+        features_found.append("Cave")
+
+    # ── 8. Exposition ────────────────────────────────────────────────
+    exposition: str | None = None
+    m = re.search(
+        r'exposition\s*:?\s*(sud[- ]?est|sud[- ]?ouest|nord[- ]?est|nord[- ]?ouest|sud|nord|est|ouest)',
+        text, re.IGNORECASE,
+    )
+    if m:
+        raw_exp = m.group(1).upper().replace(" ", "").replace("-", "")
+        _exp_map = {"SUDEST": "SE", "SUDOUEST": "SO", "NORDEST": "NE",
+                    "NORDOUEST": "NO", "SUD": "S", "NORD": "N", "EST": "E", "OUEST": "O"}
+        exposition = _exp_map.get(raw_exp)
+        if exposition:
+            features_found.append(f"Exposition {exposition}")
+
     return {
         "etage": etage,
         "nb_etages": nb_etages,
@@ -799,6 +938,11 @@ def extract_listing_features(html: str, soup: BeautifulSoup) -> dict:
         "renovation_score": round(renovation_score, 3),
         "quality_score": round(quality_score, 3),
         "charges_mensuelles": charges_mensuelles,
+        "has_balcon": has_balcon,
+        "has_terrasse": has_terrasse,
+        "has_parking": has_parking,
+        "has_cave": has_cave,
+        "exposition": exposition,
         "features_found": features_found,
     }
 
@@ -883,17 +1027,10 @@ def _predict_and_explain(
     model = art["model"]
     log_target = art.get("log_target", False)
     if isinstance(model, list):
-<<<<<<< HEAD
         raw_pred = float(np.mean([m.predict(X)[0] for m in model]))
         lgb_model = model[0]
     else:
         raw_pred = float(model.predict(X)[0])
-=======
-        prix_m2 = float(np.expm1(np.mean([m.predict(X)[0] for m in model])))
-        lgb_model = model[0]
-    else:
-        prix_m2 = float(np.expm1(model.predict(X)[0]))
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
         lgb_model = model
 
     prix_m2 = float(np.expm1(raw_pred)) if log_target else raw_pred
@@ -1210,76 +1347,8 @@ def analyze_listing_url(
     floor_corr = dpe_corr = reno_corr = 1.0
     lat: float | None = None
     lon: float | None = None
+    days_on_market: int | None = None
 
-<<<<<<< HEAD
-    missing = []
-    if prix <= 0:            missing.append("prix")
-    if surface <= 0:         missing.append("surface")
-    if not (1 <= arr <= 20): missing.append("arrondissement")
-
-    # ── 2b. Firecrawl LLM extraction fallback ─────────────────────
-    if missing:
-        fc = _get_firecrawl()
-        if fc is not None:
-            try:
-                llm_resp = fc.extract(
-                    urls=[url],
-                    prompt=(
-                        "Extrais les données de cette annonce immobilière parisienne : "
-                        "titre, prix total en €, surface en m², nombre de pièces, "
-                        "arrondissement parisien (entier 1-20)."
-                    ),
-                    schema={
-                        "type": "object",
-                        "properties": {
-                            "titre":          {"type": "string"},
-                            "prix":           {"type": "number",  "description": "Prix total €"},
-                            "surface":        {"type": "number",  "description": "Surface m²"},
-                            "pieces":         {"type": "integer", "description": "Nombre de pièces"},
-                            "arrondissement": {"type": "integer", "description": "Arrondissement 1-20"},
-                        },
-                    },
-                )
-                # extract() returns a dict or a list[dict] depending on version
-                ext = llm_resp
-                if isinstance(ext, list):
-                    ext = ext[0] if ext else {}
-                if isinstance(ext, dict) and ext:
-                    logging.info("Firecrawl LLM extraction succeeded: %s", ext)
-                    if prix <= 0 and ext.get("prix", 0) > 0:
-                        prix = _to_int(ext["prix"])
-                    if surface <= 0 and ext.get("surface", 0) > 0:
-                        surface = _to_float(ext["surface"])
-                    if not (1 <= arr <= 20) and 1 <= int(ext.get("arrondissement", 0)) <= 20:
-                        arr = int(ext["arrondissement"])
-                    if not titre and ext.get("titre"):
-                        titre = ext["titre"]
-                    if not pieces and ext.get("pieces", 0) > 0:
-                        pieces = int(ext["pieces"])
-            except Exception as _llm_exc:
-                logging.warning("Firecrawl LLM extraction failed: %s", _llm_exc)
-
-    # Re-check after LLM fallback
-    missing = []
-    if prix <= 0:            missing.append("prix")
-    if surface <= 0:         missing.append("surface")
-    if not (1 <= arr <= 20): missing.append("arrondissement")
-
-    if missing:
-        return {
-            "success": False,
-            "error": (
-                f"Données incomplètes ({raw_data.get('source','?')}) — "
-                f"champs manquants après scraping + LLM : {', '.join(missing)}. "
-                f"Extrait : prix={prix}, surface={surface}m², arr={arr}"
-            ),
-            "titre": titre, "prix_annonce": prix, "surface": surface,
-            "pieces": pieces, "arrondissement": arr,
-            "prix_predit_m2": 0, "prix_predit_m2_brut": 0, "prix_predit_total": 0, "gem_score": 0,
-            "gain_potentiel": 0, "is_hidden_gem": False, "shap_top3": [],
-            "listing_extras": {}, "corrections": {}, "photo_url": raw_data.get("photo_url"),
-        }
-=======
     # ── Path A: manual overrides (skip all scraping) ──────────────────
     if manual_overrides:
         prix    = _to_int(manual_overrides.get("prix", 0))
@@ -1287,6 +1356,8 @@ def analyze_listing_url(
         pieces  = _to_int(manual_overrides.get("pieces", 0))
         arr     = _to_int(manual_overrides.get("arrondissement", url_data.get("arrondissement", 0)))
         source  = "Manuel"
+        _raw_html: str = ""
+        _soup_obj = None
 
     # ── Path B: parse user-pasted HTML ───────────────────────────────
     elif pasted_html:
@@ -1374,6 +1445,8 @@ def analyze_listing_url(
         source   = raw_data.get("source", "")
         lat      = raw_data.get("latitude")
         lon      = raw_data.get("longitude")
+        if raw_data.get("date_publication"):
+            days_on_market = _parse_listing_date(raw_data["date_publication"])
 
         # Incomplete data → ask user to fill the gaps
         if prix <= 0 or surface <= 0 or not (1 <= arr <= 20):
@@ -1408,13 +1481,26 @@ def analyze_listing_url(
             listing_extras = {}
 
     # ── Common path: lat/lon → predict → gem score ────────────────────
->>>>>>> 8a89aaa3553e5ace43121ff0d426614f099d0458
 
     if not lat or not lon:
         lat, lon = ARR_CENTROIDS.get(arr if 1 <= arr <= 20 else 11, (48.8566, 2.3522))
 
     if pieces <= 0:
-        pieces = max(1, round(surface / 25))
+        # Heuristic by surface bracket (realistic French apartment distribution)
+        if surface < 20:
+            pieces = 1          # studio
+        elif surface < 35:
+            pieces = 1          # 1p (studio or T1)
+        elif surface < 55:
+            pieces = 2          # T2
+        elif surface < 75:
+            pieces = 3          # T3
+        elif surface < 100:
+            pieces = 4          # T4
+        elif surface < 130:
+            pieces = 5          # T5
+        else:
+            pieces = max(6, round(surface / 22))  # grand appartement
 
     safe_arr = arr if 1 <= arr <= 20 else 11
 
@@ -1433,12 +1519,79 @@ def analyze_listing_url(
             "listing_extras": {}, "corrections": {}, "photo_url": photo_url,
         }
 
-    prix_m2    = prix_m2_lgbm * floor_corr * dpe_corr * reno_corr
-    prix_total = int(prix_m2 * surface)
+    # ── Vision analysis (if Google API key available) ─────────────────
+    vision_result: dict = {}
+    reno_corr_vision = reno_corr  # start from keyword-based fallback
+    try:
+        from src.vision.renovation_scorer import RenovationScorer
+        _soup_for_vision = _soup_obj if _soup_obj is not None else None
+        _html_for_vision = _raw_html if isinstance(_raw_html, str) else ""
+        all_photos: list[str] = []
+        if _soup_for_vision is not None or _html_for_vision:
+            from bs4 import BeautifulSoup as _BS
+            soup_v = _soup_for_vision if _soup_for_vision is not None else _BS(_html_for_vision, "html.parser")
+            all_photos = _extract_all_photo_urls(soup_v, _html_for_vision, max_photos=5)
+        if not all_photos and photo_url:
+            all_photos = [photo_url]
 
-    prix_affiche_m2 = prix / surface
-    gem_score       = (prix_m2 - prix_affiche_m2) / prix_m2 if prix_m2 > 0 else 0.0
-    gain_potentiel  = max(0, int(prix_total - prix))
+        if all_photos:
+            scorer = RenovationScorer()
+            vis_results = scorer.score_batch(all_photos[:5])
+            avg_score = round(sum(r.renovation_score for r in vis_results) / len(vis_results))
+            vision_result = vis_results[0].to_dict()
+            vision_result["renovation_score"] = avg_score
+            vision_result["photos_analyzed"] = len(vis_results)
+
+            _VISION_RENO = {1: 1.08, 2: 1.03, 3: 1.00, 4: 0.95, 5: 0.88}
+            reno_corr_vision = _VISION_RENO.get(avg_score, 1.0)
+            if vision_result.get("luminosite") == "Lumineuse":
+                reno_corr_vision *= 1.02
+            elif vision_result.get("luminosite") == "Sombre":
+                reno_corr_vision *= 0.98
+            if vision_result.get("hauteur_plafond") == "Haute":
+                reno_corr_vision *= 1.015
+            if vision_result.get("qualite_generale") == "Premium":
+                reno_corr_vision *= 1.02
+            elif vision_result.get("qualite_generale") == "Basique":
+                reno_corr_vision *= 0.98
+            reno_corr = reno_corr_vision
+    except Exception as _ve:
+        logging.debug("Vision analysis skipped: %s", _ve)
+
+    # Exposition correction
+    expo_corr = 1.0
+    exposition_val = listing_extras.get("exposition")
+    if exposition_val:
+        expo_corr = EXPOSITION_CORRECTIONS.get(exposition_val, 1.0)
+
+    # Final price with all corrections + market trend factor
+    prix_m2    = prix_m2_lgbm * MARKET_TREND_FACTOR * floor_corr * dpe_corr * reno_corr * expo_corr
+    prix_total = int(prix_m2 * surface)
+    prix_affiche_m2 = int(prix / surface) if surface > 0 else 0
+
+    # Renovation cost adjustment (from vision analysis)
+    # Score 3 → buyer spends ~300€/m², score 4 → 1000€/m², score 5 → 1500€/m²
+    _RENO_COSTS_M2 = {3: 300.0, 4: 1_000.0, 5: 1_500.0}
+    vision_reno_score = vision_result.get("renovation_score") if vision_result else None
+    reno_cost_m2 = _RENO_COSTS_M2.get(vision_reno_score, 0.0) if vision_reno_score is not None else 0.0
+    prix_predit_net = max(prix_m2 - reno_cost_m2, prix_m2 * 0.5)  # floor at 50% to avoid absurd values
+
+    # Dynamic negotiation margin based on days-on-market
+    if days_on_market is None:
+        _marge = 0.07
+    elif days_on_market <= 30:
+        _marge = 0.05   # fresh listing — less room to negotiate
+    elif days_on_market <= 90:
+        _marge = 0.07   # standard
+    elif days_on_market <= 180:
+        _marge = 0.10   # stale — seller likely motivated
+    else:
+        _marge = 0.13   # very stale — significant negotiation expected
+
+    prix_estime_vente    = prix * (1 - _marge)
+    prix_estime_vente_m2 = prix_estime_vente / surface
+    gem_score      = (prix_predit_net - prix_estime_vente_m2) / prix_predit_net if prix_predit_net > 0 else 0.0
+    gain_potentiel = max(0, int(prix_total - prix_estime_vente))
 
     return {
         "success":             True,
@@ -1450,21 +1603,27 @@ def analyze_listing_url(
         "arrondissement":      int(safe_arr),
         "latitude":            float(lat),
         "longitude":           float(lon),
-        "prix_affiche_m2":     int(prix_affiche_m2),
+        "prix_affiche_m2":     prix_affiche_m2,
         "prix_predit_m2_brut": round(prix_m2_lgbm, 0),
         "prix_predit_m2":      round(prix_m2, 0),
         "prix_predit_total":   prix_total,
         "gem_score":           round(gem_score, 4),
         "gain_potentiel":      gain_potentiel,
-        "is_hidden_gem":       gem_score > 0.08,
+        "is_hidden_gem":       gem_score > 0.10,
         "shap_top3":           shap_top3,
         "listing_extras":      listing_extras,
+        "vision":              vision_result,
         "corrections": {
-            "floor_corr": round(floor_corr, 4),
-            "dpe_corr":   round(dpe_corr, 4),
-            "reno_corr":  round(reno_corr, 4),
-            "total_corr": round(floor_corr * dpe_corr * reno_corr, 4),
+            "market_trend":  MARKET_TREND_FACTOR,
+            "floor_corr":    round(floor_corr, 4),
+            "dpe_corr":      round(dpe_corr, 4),
+            "reno_corr":     round(reno_corr, 4),
+            "expo_corr":     round(expo_corr, 4),
+            "reno_cost_m2":  round(reno_cost_m2),
+            "total_corr":    round(MARKET_TREND_FACTOR * floor_corr * dpe_corr * reno_corr * expo_corr, 4),
         },
+        "days_on_market":      days_on_market,
+        "negotiation_margin":  round(_marge, 2),
         "photo_url": photo_url,
         "error":     None,
     }

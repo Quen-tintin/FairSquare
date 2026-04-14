@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # APIs
     openai_api_key: str = ""
     google_api_key: str = ""          # Google AI Studio (Gemini)
-    firecrawl_api_key: str = "fc-3e90c5b3f59340a7b9756a11680ad0e9"
+    firecrawl_api_key: str = ""
     dvf_base_url: str = "https://apidf.datafoncier.cerema.fr"
 
     # App
