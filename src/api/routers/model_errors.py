@@ -40,6 +40,12 @@ def _compute_errors() -> dict:
 
         df = pd.read_parquet(PARQUET_PATH)
 
+        # IQR filter (same as training)
+        p = df["prix_m2"]
+        q1, q3 = p.quantile(0.25), p.quantile(0.75)
+        iqr = q3 - q1
+        df = df[p.between(q1 - 1.5 * iqr, q3 + 1.5 * iqr)].copy()
+
         # Derive arrondissement
         if "arrondissement" not in df.columns:
             if "code_postal" in df.columns:

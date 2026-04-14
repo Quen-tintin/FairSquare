@@ -16,6 +16,7 @@ venv/
 data/raw/
 data/features/
 data/processed/*.parquet
+!data/processed/dvf_paris_2023_2025_clean.parquet
 
 # Models binaries (keep best_model.pkl for deployment)
 models/artifacts/*.json
