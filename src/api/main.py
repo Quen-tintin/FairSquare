@@ -9,6 +9,10 @@ from config import get_settings
 from src.api.routers.health import router as health_router
 from src.api.routers.predict import router as predict_router
 from src.api.routers.analyze_url import router as analyze_url_router
+from src.api.routers.model_metrics import router as model_metrics_router
+from src.api.routers.dvf_transactions import router as dvf_transactions_router
+from src.api.routers.hidden_gems import router as hidden_gems_router
+from src.api.routers.model_errors import router as model_errors_router
 
 settings = get_settings()
 
@@ -36,3 +40,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(predict_router)
 app.include_router(analyze_url_router)
+app.include_router(model_metrics_router)
+app.include_router(dvf_transactions_router)
+app.include_router(hidden_gems_router)
+app.include_router(model_errors_router)
