@@ -50,6 +50,10 @@ FEATURE_COLS_V2 = [
     "trimestre",
     # Building
     "nombre_lots",
+    # Vision & Environmental (Phase 2 integration)
+    "renovation_score",         # score 1-5 (LLM vision)
+    "dist_metro_m",             # distance to nearest metro/RER (OSM)
+    "walkability_score",        # composite score (OSM)
 ]
 
 TARGET = "prix_m2"
@@ -218,6 +222,10 @@ def add_features(
     voie_enc: dict[str, float] | None = None,
     grid_enc: dict[str, float] | None = None,
     voie_recent_lookup: dict[str, float] | None = None,
+    # New Phase 2 features (can be passed or set to neutral defaults)
+    renov_score: int | None = None,
+    dist_metro: float | None = None,
+    walk_score: float | None = None,
 ) -> pd.DataFrame:
     """
     Add engineered features to *df* in-place copy.
@@ -326,6 +334,12 @@ def add_features(
     if "annee" not in data.columns:
         data["annee"] = 2023
 
+    # ── Phase 2: Vision & OSM Features ────────────────────────────────
+    # Default to "Average" (3) / "Neutral" distances if missing
+    data["renovation_score"] = renov_score if renov_score is not None else 3
+    data["dist_metro_m"]     = dist_metro if dist_metro is not None else 450.0 # ~5 min walk
+    data["walkability_score"] = walk_score if walk_score is not None else 75.0
+
     return data
 
 
@@ -336,6 +350,9 @@ def prepare_features_v2(
     voie_enc: dict[str, float] | None = None,
     grid_enc: dict[str, float] | None = None,
     voie_recent_lookup: dict[str, float] | None = None,
+    renov_score: int | None = None,
+    dist_metro: float | None = None,
+    walk_score: float | None = None,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """
     Full pipeline: add features → select columns → drop NaN rows.
@@ -348,6 +365,9 @@ def prepare_features_v2(
         voie_enc=voie_enc,
         grid_enc=grid_enc,
         voie_recent_lookup=voie_recent_lookup,
+        renov_score=renov_score,
+        dist_metro=dist_metro,
+        walk_score=walk_score,
     )
 
     X = data[FEATURE_COLS_V2].copy()
@@ -365,6 +385,9 @@ def predict_price(
     longitude: float,
     artifact: dict,
     adresse_code_voie: str | None = None,
+    renov_score: int | None = None,
+    dist_metro: float | None = None,
+    walk_score: float | None = None,
 ) -> float:
     """
     Single-row prediction from a trained artifact dict.
@@ -394,6 +417,9 @@ def predict_price(
         global_mean=artifact.get("global_mean", 10796.0),
         voie_enc=artifact.get("voie_enc"),
         grid_enc=artifact.get("grid_enc"),
+        renov_score=renov_score,
+        dist_metro=dist_metro,
+        walk_score=walk_score,
     )
 
     model = artifact["model"]

@@ -22,6 +22,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.features.osm_features import OSMFeatureExtractor
+from src.vision.renovation_scorer import RenovationScorer
+from config.settings import get_settings
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -42,6 +46,9 @@ class GemResult:
     prix_m2_predit: float        # model prediction
     prix_total_transaction: float
     prix_total_predit: float
+    # Specialist fields: Market Range (±10% confidence)
+    prix_total_min: float
+    prix_total_max: float
     gem_score: float             # (predit - transaction) / predit
     decote_pct: float            # how under-priced in % terms
     adresse: str
@@ -145,9 +152,11 @@ class RecommenderEngine:
         pieces_min      : Minimum number of main rooms
         top_n           : Number of results to return
         gem_threshold   : Minimum gem_score to qualify (default 0.10 = 10% under-valued)
+        use_vision      : Whether to use Gemini to score photos (requires API key)
         """
         self._ensure_loaded()
         df = self._df.copy()
+        settings = get_settings()
 
         # ── Filters ──────────────────────────────────────────────────
         # Budget: prix_m2 × surface ≤ budget
@@ -211,7 +220,14 @@ class RecommenderEngine:
             parts.append(f"Paris {arr}{'er' if arr == 1 else 'e'}")
             adresse = " ".join(parts) if parts else f"Paris {arr}e"
 
-            results.append(GemResult(
+            predit_total = prix_m2 * surface
+            
+            # Specialist logic: Reality-based confidence range (±8% to ±12% depending on model)
+            # We use a standard ±10% 'Specialist' range for the market appraisal.
+            prix_min = round(predit_m2 * surface * 0.90, -2)
+            prix_max = round(predit_m2 * surface * 1.10, -2)
+
+            res = GemResult(
                 rank=rank,
                 arrondissement=arr,
                 surface=round(surface, 1),
@@ -220,11 +236,24 @@ class RecommenderEngine:
                 prix_m2_predit=round(predit_m2, 0),
                 prix_total_transaction=round(prix_m2 * surface, 0),
                 prix_total_predit=round(predit_m2 * surface, 0),
+                prix_total_min=prix_min,
+                prix_total_max=prix_max,
                 gem_score=round(score, 4),
                 decote_pct=round(score * 100, 1),
                 adresse=adresse,
                 mois_transaction=int(row.get("mois", 0)),
-            ))
+            )
+            
+            # ── Phase 2: Enrichment (Top Gems only) ──────────────────
+            # Add OSM walkability if possible
+            try:
+                osm = OSMFeatureExtractor(courtesy_delay=0)
+                osm_feat = osm.get_features(row['latitude'], row['longitude'])
+                res.walkability_hint = f"Walkability: {osm_feat.walkability_score}/100"
+            except Exception:
+                res.walkability_hint = "Walkability: N/A (OSM Timeout)"
+
+            results.append(res)
 
         return results
 

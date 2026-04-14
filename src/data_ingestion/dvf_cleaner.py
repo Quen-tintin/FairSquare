@@ -35,6 +35,7 @@ _RENAME_MAP: dict[str, str] = {
     "sbati": "surface_reelle_bati",
     "nbpprinc": "nombre_pieces_principales",
     "libtyplocmut": "type_local",
+    "libnatmut": "nature_mutation",
     "lat": "latitude",
     "lon": "longitude",
     "codedep": "code_departement",
@@ -44,12 +45,15 @@ _RENAME_MAP: dict[str, str] = {
 # Types locaux à conserver (on exclut les terrains, parkings seuls, etc.)
 _TYPES_LOCAUX_CIBLES = {"Appartement", "Maison"}
 
+# Nature de mutation à conserver (on exclut les donations, échanges, etc.)
+_NATURE_MUTATION_CIBLES = {"Vente", "Vente en l'état futur d'achèvement"}
+
 # Seuils de filtrage (valeurs aberrantes)
-_PRIX_MIN = 10_000          # € — en dessous : sûrement une erreur
-_PRIX_MAX = 30_000_000      # € — ventes atypiques / immeubles entiers
-_SURFACE_MIN = 5            # m²
+_PRIX_MIN = 30_000          # € — en dessous : sûrement une donation déguisée ou erreur
+_PRIX_MAX = 30_000_000      # €
+_SURFACE_MIN = 9            # m² (minimum légal pour une location en France)
 _SURFACE_MAX = 1_000        # m²
-_PRIX_M2_MIN = 500          # €/m²
+_PRIX_M2_MIN = 2_500        # €/m² — en IDF, en dessous c'est suspect (viager, etc.)
 _PRIX_M2_MAX = 50_000       # €/m²
 
 
@@ -76,6 +80,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = _rename_columns(df)
     df = _cast_types(df)
     df = _filter_type_local(df)
+    df = _filter_nature_mutation(df)
     df = _filter_outliers(df)
     df = _drop_duplicates(df)
     df = _add_derived_features(df)
@@ -146,6 +151,17 @@ def _filter_type_local(df: pd.DataFrame) -> pd.DataFrame:
     before = len(df)
     df = df[df["type_local"].isin(_TYPES_LOCAUX_CIBLES)].copy()
     logger.debug("Type filter: %d → %d rows", before, len(df))
+    return df
+
+
+def _filter_nature_mutation(df: pd.DataFrame) -> pd.DataFrame:
+    """Garde uniquement les ventes classiques (exclut donations, échanges)."""
+    if "nature_mutation" not in df.columns:
+        logger.warning("Column 'nature_mutation' not found — skipping nature filter")
+        return df
+    before = len(df)
+    df = df[df["nature_mutation"].isin(_NATURE_MUTATION_CIBLES)].copy()
+    logger.debug("Nature filter: %d → %d rows", before, len(df))
     return df
 
 

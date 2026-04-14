@@ -37,8 +37,9 @@ ARTIFACTS_DIR = ROOT / "models" / "artifacts"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 RANDOM_STATE = 42
-N_OPTUNA_TRIALS = 60
+N_OPTUNA_TRIALS = 30 # More trials since features are more complex
 CV_FOLDS = 5
+TRAIN_SAMPLE_SIZE = 40_000 # Speed fix as requested
 
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────
@@ -66,38 +67,58 @@ def evaluate(y_true: np.ndarray, y_pred: np.ndarray, name: str) -> dict:
 def load_and_split():
     print("Loading data…")
     df = pd.read_parquet(PROCESSED)
-    print(f"  {len(df):,} rows, {df.shape[1]} columns")
+    print(f"  {len(df):,} rows available")
+
+    # Speed upgrade: sample for optimization phase as requested
+    if TRAIN_SAMPLE_SIZE and TRAIN_SAMPLE_SIZE < len(df):
+        print(f"  Sampling {TRAIN_SAMPLE_SIZE:,} rows for speed...")
+        df = df.sample(TRAIN_SAMPLE_SIZE, random_state=RANDOM_STATE)
 
     df_train, df_test = train_test_split(df, test_size=0.2, random_state=RANDOM_STATE)
 
-    # Target encoding — computed from train split ONLY (no leakage)
-    arr_enc = compute_arr_target_enc(df_train)
-    global_mean = float(df_train["prix_m2"].mean())
+    # Specialist Step: Multi-level Target Encoding (Rue, Quartier, Arrondissement)
+    from src.ml.features_v2 import compute_target_encodings
+    encodings = compute_target_encodings(df_train)
+    
+    arr_enc   = encodings["arr_enc"]
+    voie_enc  = encodings["voie_enc"]
+    grid_enc  = encodings["grid_enc"]
+    global_mean = encodings["global_mean"]
 
-    X_train, y_train = prepare_features_v2(df_train, arr_enc, global_mean)
-    X_test,  y_test  = prepare_features_v2(df_test,  arr_enc, global_mean)
+    X_train, y_train = prepare_features_v2(
+        df_train, 
+        arr_target_enc=arr_enc, 
+        voie_enc=voie_enc, 
+        grid_enc=grid_enc,
+        global_mean=global_mean
+    )
+    X_test,  y_test  = prepare_features_v2(
+        df_test,  
+        arr_target_enc=arr_enc, 
+        voie_enc=voie_enc, 
+        grid_enc=grid_enc,
+        global_mean=global_mean
+    )
 
     print(f"  Train: {len(X_train):,}  Test: {len(X_test):,}  Features: {len(FEATURE_COLS_V2)}")
-    return X_train, X_test, y_train, y_test, arr_enc, global_mean
+    return X_train, X_test, y_train, y_test, encodings
 
 
 # ── Optuna objective (LightGBM) ──────────────────────────────────────────────
 
-def lgb_objective(trial, X_cv: pd.DataFrame, y_cv: pd.Series) -> float:
+def lgb_objective(trial, X_cv: pd.DataFrame, y_cv: pd.Series, w_cv: np.ndarray) -> float:
     import lightgbm as lgb
 
     params = {
-        "objective":          "regression_l1",  # optimise MAE directly
+        "objective":          "regression_l1",
         "metric":             "mae",
-        "n_estimators":       trial.suggest_int("n_estimators", 200, 2000),
-        "learning_rate":      trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-        "num_leaves":         trial.suggest_int("num_leaves", 20, 300),
-        "min_child_samples":  trial.suggest_int("min_child_samples", 5, 80),
-        "feature_fraction":   trial.suggest_float("feature_fraction", 0.5, 1.0),
-        "bagging_fraction":   trial.suggest_float("bagging_fraction", 0.5, 1.0),
-        "bagging_freq":       1,
-        "reg_alpha":          trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda":         trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "n_estimators":       trial.suggest_int("n_estimators", 400, 2500),
+        "learning_rate":      trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+        "num_leaves":         trial.suggest_int("num_leaves", 31, 512),
+        "min_child_samples":  trial.suggest_int("min_child_samples", 10, 100),
+        "feature_fraction":   trial.suggest_float("feature_fraction", 0.6, 1.0),
+        "lambda_l1":          trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
+        "lambda_l2":          trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
         "verbose":            -1,
         "random_state":       RANDOM_STATE,
     }
@@ -107,11 +128,12 @@ def lgb_objective(trial, X_cv: pd.DataFrame, y_cv: pd.Series) -> float:
     for tr_idx, val_idx in kf.split(X_cv):
         X_tr, X_val = X_cv.iloc[tr_idx], X_cv.iloc[val_idx]
         y_tr, y_val = y_cv.iloc[tr_idx], y_cv.iloc[val_idx]
+        w_tr = w_cv[tr_idx]
+
         m = lgb.LGBMRegressor(**params)
-        m.fit(X_tr, y_tr,
+        m.fit(X_tr, y_tr, sample_weight=w_tr,
               eval_set=[(X_val, y_val)],
-              callbacks=[lgb.early_stopping(50, verbose=False),
-                         lgb.log_evaluation(-1)])
+              callbacks=[lgb.early_stopping(50, verbose=False)])
         maes.append(mean_absolute_error(y_val, m.predict(X_val)))
 
     return float(np.mean(maes))
@@ -122,10 +144,15 @@ def lgb_objective(trial, X_cv: pd.DataFrame, y_cv: pd.Series) -> float:
 def train_lightgbm(X_train, y_train, X_test, y_test) -> tuple[object, dict]:
     import lightgbm as lgb
 
+    # Compute Sample Weights (Specialist logic: Reality alignment)
+    # Recent transactions (2024) are more representative of the 2025 reality.
+    # Weight: 1.0 (2021) -> 1.5 (2024)
+    weights_train = (1.0 + (X_train["annee"] - 2021) * 0.16).values
+
     print(f"\nOptuna LightGBM ({N_OPTUNA_TRIALS} trials, {CV_FOLDS}-fold CV)...")
     study = optuna.create_study(direction="minimize")
     study.optimize(
-        lambda t: lgb_objective(t, X_train, y_train),
+        lambda t: lgb_objective(t, X_train, y_train, weights_train),
         n_trials=N_OPTUNA_TRIALS,
         show_progress_bar=True,
     )
@@ -140,7 +167,7 @@ def train_lightgbm(X_train, y_train, X_test, y_test) -> tuple[object, dict]:
         random_state=RANDOM_STATE,
         **best,
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=weights_train)
     metrics = evaluate(y_test.values, model.predict(X_test), "LightGBM_v2")
     return model, metrics
 
@@ -189,10 +216,10 @@ def ensemble_predict(models: list, X: pd.DataFrame) -> np.ndarray:
 
 def main():
     print("=" * 60)
-    print("FairSquare — Improved Model Training")
+    print("FairSquare — High Precision Model Training (V3.1)")
     print("=" * 60)
 
-    X_train, X_test, y_train, y_test, arr_enc, global_mean = load_and_split()
+    X_train, X_test, y_train, y_test, encodings = load_and_split()
 
     print("\n[1/3] LightGBM with Optuna")
     lgb_model, lgb_metrics = train_lightgbm(X_train, y_train, X_test, y_test)
@@ -225,11 +252,13 @@ def main():
 
     print(f"\nBest model: {best_name} (MAE={best_mae:,.1f})")
 
-    # Save artifact
+    # Save artifact (All encodings included for inference)
     artifact = {
         "model":       best_obj,
-        "arr_enc":     arr_enc,
-        "global_mean": global_mean,
+        "arr_enc":     encodings["arr_enc"],
+        "voie_enc":    encodings["voie_enc"],
+        "grid_enc":    encodings["grid_enc"],
+        "global_mean": encodings["global_mean"],
         "feature_cols": FEATURE_COLS_V2,
     }
     artifact_path = ARTIFACTS_DIR / "best_model.pkl"

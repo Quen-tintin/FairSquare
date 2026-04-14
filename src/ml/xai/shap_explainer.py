@@ -17,7 +17,10 @@ class SHAPExplainer:
     def __init__(self, model, feature_names: list[str]) -> None:
         self.model = model
         self.feature_names = feature_names
-        self.explainer = shap.TreeExplainer(model)
+        # Ensemble fix: SHAP TreeExplainer requires a single model object.
+        # We use the first model in the ensemble for feature importance explanation.
+        target_model = model[0] if isinstance(model, list) else model
+        self.explainer = shap.TreeExplainer(target_model)
 
     def shap_values(self, X: pd.DataFrame) -> np.ndarray:
         return self.explainer.shap_values(X)
