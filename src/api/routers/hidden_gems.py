@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _load_gems() -> dict:
+    """Load and cache the scored listings JSON from disk.
+
+    Returns:
+        dict: Parsed JSON with keys ``metadata`` and ``gems``.
+              Falls back to an empty structure on I/O error.
+    """
     try:
         with open(GEMS_PATH, encoding="utf-8") as f:
             return json.load(f)

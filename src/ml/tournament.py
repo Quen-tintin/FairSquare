@@ -16,11 +16,29 @@ logger = get_logger(__name__)
 
 
 def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Compute Mean Absolute Percentage Error, ignoring zero-valued targets.
+
+    Args:
+        y_true: Ground-truth values.
+        y_pred: Model predictions.
+
+    Returns:
+        float: MAPE in percent (e.g. ``15.3`` means 15.3%).
+    """
     mask = y_true != 0
     return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100)
 
 
 def _eval(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Compute a standard regression scorecard.
+
+    Args:
+        y_true: Ground-truth values.
+        y_pred: Model predictions.
+
+    Returns:
+        dict: Keys ``MAE``, ``RMSE``, ``R2``, ``MAPE_%``.
+    """
     return {
         "MAE": round(float(mean_absolute_error(y_true, y_pred)), 1),
         "RMSE": round(float(np.sqrt(mean_squared_error(y_true, y_pred))), 1),

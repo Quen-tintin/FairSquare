@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _load_metrics() -> list[dict]:
+    """Load and cache the model-evolution history from ``metrics.json``.
+
+    Returns:
+        list[dict]: One entry per training run (keys: model, MAE, RMSE, R2, MAPE_%).
+                    Returns an empty list if the file is missing.
+    """
     try:
         with open(METRICS_PATH) as f:
             return json.load(f)

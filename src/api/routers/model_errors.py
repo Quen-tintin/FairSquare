@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _load_error_analysis() -> dict:
+    """Load and cache the precomputed error-analysis JSON.
+
+    The file is generated offline by ``scripts/train_v4_voie_recent.py``
+    to avoid expensive live computation on Render's free tier.
+
+    Returns:
+        dict: Keys ``scatter_data``, ``residual_distribution``,
+              ``error_by_arrondissement``, and ``metrics``.
+
+    Raises:
+        FileNotFoundError: If ``error_analysis.json`` is absent from the repo.
+    """
     try:
         with open(ERROR_ANALYSIS_PATH, encoding="utf-8") as f:
             return json.load(f)

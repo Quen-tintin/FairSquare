@@ -9,8 +9,13 @@ ARTIFACT = ROOT / "models" / "artifacts" / "best_model.pkl"
 router = APIRouter(tags=["ops"])
 
 
-@router.get("/health")
-async def health_check():
+@router.get("/health", summary="Service health check")
+async def health_check() -> dict:
+    """Return service liveness and model artifact availability.
+
+    Returns:
+        dict: Keys ``status`` (str), ``model_ready`` (bool), ``model_path`` (str | None).
+    """
     return {
         "status": "ok",
         "model_ready": ARTIFACT.exists(),
