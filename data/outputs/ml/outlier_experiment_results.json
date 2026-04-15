@@ -1,0 +1,357 @@
+{
+  "experiments": [
+    {
+      "MAE": 1446.7,
+      "RMSE": 2023.9,
+      "R2": 0.5116,
+      "MAPE_%": 15.24,
+      "pct_within_1000": 47.8,
+      "pct_within_2000": 76.3,
+      "label": "A_IQR_1.5x",
+      "n_train": 49920,
+      "n_test": 12481,
+      "best_iteration": 238
+    },
+    {
+      "MAE": 1345.9,
+      "RMSE": 1804.8,
+      "R2": 0.4838,
+      "MAPE_%": 14.48,
+      "pct_within_1000": 49.0,
+      "pct_within_2000": 78.3,
+      "label": "B_IQR+IF_3pct",
+      "n_train": 48423,
+      "n_test": 12106,
+      "best_iteration": 252
+    },
+    {
+      "MAE": 1299.8,
+      "RMSE": 1737.0,
+      "R2": 0.478,
+      "MAPE_%": 14.01,
+      "pct_within_1000": 49.9,
+      "pct_within_2000": 79.2,
+      "label": "C_IQR+IF_5pct",
+      "n_train": 47424,
+      "n_test": 11857,
+      "best_iteration": 575
+    },
+    {
+      "MAE": 1298.5,
+      "RMSE": 1740.9,
+      "R2": 0.5506,
+      "MAPE_%": 13.16,
+      "pct_within_1000": 49.9,
+      "pct_within_2000": 79.5,
+      "label": "D_IQR_1.0x",
+      "n_train": 47524,
+      "n_test": 11882,
+      "best_iteration": 290
+    },
+    {
+      "MAE": 1411.2,
+      "RMSE": 1959.3,
+      "R2": 0.5184,
+      "MAPE_%": 14.68,
+      "pct_within_1000": 49.3,
+      "pct_within_2000": 77.0,
+      "label": "E_IQR+tight_bounds",
+      "n_train": 49835,
+      "n_test": 12459,
+      "best_iteration": 270
+    }
+  ],
+  "best_strategy": "D_IQR_1.0x",
+  "outlier_categorization_3pct": {
+    "n_bad": 7,
+    "n_rare": 1865,
+    "bad_examples": [
+      {
+        "arr": 7,
+        "surface": 130.0,
+        "prix_m2": 2769.0,
+        "prix_total": 360000.0
+      },
+      {
+        "arr": 19,
+        "surface": 10.0,
+        "prix_m2": 3500.0,
+        "prix_total": 35000.0
+      },
+      {
+        "arr": 5,
+        "surface": 7.0,
+        "prix_m2": 5429.0,
+        "prix_total": 38000.0
+      },
+      {
+        "arr": 2,
+        "surface": 9.0,
+        "prix_m2": 5444.0,
+        "prix_total": 49000.0
+      },
+      {
+        "arr": 3,
+        "surface": 7.0,
+        "prix_m2": 5714.0,
+        "prix_total": 40000.0
+      }
+    ],
+    "rare_examples": [
+      {
+        "arr": 7,
+        "surface": 50.0,
+        "prix_m2": 28000.0,
+        "prix_total": 1400000.0
+      },
+      {
+        "arr": 7,
+        "surface": 178.0,
+        "prix_m2": 27809.0,
+        "prix_total": 4950000.0
+      },
+      {
+        "arr": 7,
+        "surface": 45.0,
+        "prix_m2": 27778.0,
+        "prix_total": 1250000.0
+      },
+      {
+        "arr": 7,
+        "surface": 63.0,
+        "prix_m2": 27778.0,
+        "prix_total": 1750000.0
+      },
+      {
+        "arr": 7,
+        "surface": 256.0,
+        "prix_m2": 27770.0,
+        "prix_total": 7109231.0
+      }
+    ],
+    "summary": {
+      "bad_mean_prix_m2": 7795.0,
+      "rare_mean_prix_m2": 16569.0
+    }
+  },
+  "outlier_categorization_5pct": {
+    "n_bad": 27,
+    "n_rare": 3093,
+    "bad_examples": [
+      {
+        "arr": 7,
+        "surface": 94.0,
+        "prix_m2": 2596.0,
+        "prix_total": 244000.0
+      },
+      {
+        "arr": 7,
+        "surface": 130.0,
+        "prix_m2": 2769.0,
+        "prix_total": 360000.0
+      },
+      {
+        "arr": 19,
+        "surface": 9.0,
+        "prix_m2": 3222.0,
+        "prix_total": 29000.0
+      },
+      {
+        "arr": 19,
+        "surface": 10.0,
+        "prix_m2": 3500.0,
+        "prix_total": 35000.0
+      },
+      {
+        "arr": 19,
+        "surface": 11.0,
+        "prix_m2": 3636.0,
+        "prix_total": 40000.0
+      }
+    ],
+    "rare_examples": [
+      {
+        "arr": 7,
+        "surface": 50.0,
+        "prix_m2": 28000.0,
+        "prix_total": 1400000.0
+      },
+      {
+        "arr": 7,
+        "surface": 178.0,
+        "prix_m2": 27809.0,
+        "prix_total": 4950000.0
+      },
+      {
+        "arr": 7,
+        "surface": 45.0,
+        "prix_m2": 27778.0,
+        "prix_total": 1250000.0
+      },
+      {
+        "arr": 7,
+        "surface": 63.0,
+        "prix_m2": 27778.0,
+        "prix_total": 1750000.0
+      },
+      {
+        "arr": 7,
+        "surface": 256.0,
+        "prix_m2": 27770.0,
+        "prix_total": 7109231.0
+      }
+    ],
+    "summary": {
+      "bad_mean_prix_m2": 5409.0,
+      "rare_mean_prix_m2": 15194.0
+    }
+  },
+  "residual_analysis": {
+    "by_arrondissement": {
+      "1": {
+        "MAE": 1964.2,
+        "bias": -396.7,
+        "n": 133
+      },
+      "2": {
+        "MAE": 1638.8,
+        "bias": -12.2,
+        "n": 155
+      },
+      "3": {
+        "MAE": 1584.4,
+        "bias": -284.7,
+        "n": 275
+      },
+      "4": {
+        "MAE": 2001.9,
+        "bias": -124.2,
+        "n": 229
+      },
+      "5": {
+        "MAE": 1511.0,
+        "bias": -7.6,
+        "n": 320
+      },
+      "6": {
+        "MAE": 2468.3,
+        "bias": -542.5,
+        "n": 323
+      },
+      "7": {
+        "MAE": 2364.9,
+        "bias": -277.7,
+        "n": 375
+      },
+      "8": {
+        "MAE": 1893.7,
+        "bias": -448.6,
+        "n": 265
+      },
+      "9": {
+        "MAE": 1436.5,
+        "bias": 29.1,
+        "n": 462
+      },
+      "10": {
+        "MAE": 1225.4,
+        "bias": -119.1,
+        "n": 624
+      },
+      "11": {
+        "MAE": 1096.7,
+        "bias": 21.3,
+        "n": 892
+      },
+      "12": {
+        "MAE": 1001.5,
+        "bias": 16.5,
+        "n": 644
+      },
+      "13": {
+        "MAE": 925.3,
+        "bias": -97.9,
+        "n": 591
+      },
+      "14": {
+        "MAE": 1101.7,
+        "bias": -131.8,
+        "n": 619
+      },
+      "15": {
+        "MAE": 1063.6,
+        "bias": -6.7,
+        "n": 1283
+      },
+      "16": {
+        "MAE": 1449.0,
+        "bias": 11.1,
+        "n": 985
+      },
+      "17": {
+        "MAE": 1279.2,
+        "bias": -101.2,
+        "n": 1049
+      },
+      "18": {
+        "MAE": 1242.6,
+        "bias": -11.7,
+        "n": 1248
+      },
+      "19": {
+        "MAE": 1038.5,
+        "bias": 37.2,
+        "n": 623
+      },
+      "20": {
+        "MAE": 913.1,
+        "bias": -25.2,
+        "n": 772
+      }
+    },
+    "by_surface": {
+      "<30m2": {
+        "MAE": 1309.1,
+        "bias": -13.4,
+        "n": 3389
+      },
+      "30-60m2": {
+        "MAE": 1202.3,
+        "bias": -69.2,
+        "n": 4922
+      },
+      "60-100m2": {
+        "MAE": 1304.0,
+        "bias": -122.6,
+        "n": 2447
+      },
+      ">100m2": {
+        "MAE": 1668.7,
+        "bias": -145.5,
+        "n": 1109
+      }
+    },
+    "by_price_tier": {
+      "<7k": {
+        "MAE": 1966.9,
+        "bias": 1957.9,
+        "n": 854
+      },
+      "7-10k": {
+        "MAE": 1002.4,
+        "bias": 608.5,
+        "n": 5194
+      },
+      "10-14k": {
+        "MAE": 1221.5,
+        "bias": -682.5,
+        "n": 4939
+      },
+      ">14k": {
+        "MAE": 2814.4,
+        "bias": -2623.9,
+        "n": 880
+      }
+    }
+  }
+}

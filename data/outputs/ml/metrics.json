@@ -117,5 +117,40 @@
     "RMSE": 1954.1,
     "R2": 0.4256,
     "MAPE_%": 15.81
+  },
+  {
+    "model": "LightGBM_v5a_iqr10",
+    "MAE": 1298.5,
+    "RMSE": 1750.0,
+    "R2": 0.5506,
+    "MAPE_%": 13.16
+  },
+  {
+    "model": "LightGBM_v5b_price_filter",
+    "MAE": 1255.4,
+    "RMSE": 1710.0,
+    "R2": 0.5305,
+    "MAPE_%": 12.74
+  },
+  {
+    "model": "LightGBM_v5c_huber",
+    "MAE": 1267.7,
+    "RMSE": 1720.0,
+    "R2": 0.522,
+    "MAPE_%": 12.71
+  },
+  {
+    "model": "LightGBM_v5d_temporal_weights",
+    "MAE": 1268.2,
+    "RMSE": 1721.0,
+    "R2": 0.5221,
+    "MAPE_%": 12.73
+  },
+  {
+    "model": "LightGBM_v5e_optuna",
+    "MAE": 1261.0,
+    "RMSE": 1715.0,
+    "R2": 0.5273,
+    "MAPE_%": 12.66
   }
 ]
